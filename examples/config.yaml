@@ -1,0 +1,99 @@
+# smppd example configuration
+
+# Listeners accept incoming SMPP connections
+listeners:
+  - name: default
+    address: "0.0.0.0:2775"
+    protocol: smpp
+    limits:
+      max_connections: 1000
+      idle_timeout: 60s
+      request_timeout: 30s
+    filters:
+      - type: auth
+        config:
+          required: true
+      - type: rate_limit
+        config:
+          requests_per_second: 100
+
+  - name: secure
+    address: "0.0.0.0:2776"
+    protocol: smpp
+    tls:
+      cert: /etc/smppd/server.crt
+      key: /etc/smppd/server.key
+
+# Clusters define upstream SMSC groups
+clusters:
+  - name: vodacom
+    endpoints:
+      - address: "smsc1.vodacom.example:2775"
+        system_id: katembe
+        password: secret123
+        weight: 2
+      - address: "smsc2.vodacom.example:2775"
+        system_id: katembe
+        password: secret123
+        weight: 1
+    load_balancer: weighted
+    health_check:
+      interval: 30s
+      timeout: 5s
+      unhealthy_threshold: 3
+      healthy_threshold: 2
+    pool:
+      min_connections: 2
+      max_connections: 10
+      acquire_timeout: 5s
+
+  - name: mtn
+    endpoints:
+      - address: "smsc.mtn.example:2775"
+        system_id: katembe
+        password: secret456
+    load_balancer: round_robin
+
+  - name: mock
+    endpoints: []
+    mock:
+      response: success
+      latency: 50ms
+
+# Routes determine which cluster handles each message
+routes:
+  - name: vodacom-route
+    match_:
+      prefix: "+25884"
+    cluster: vodacom
+    priority: 1
+
+  - name: mtn-route
+    match_:
+      prefix: "+25882"
+    cluster: mtn
+    priority: 1
+
+  - name: test-route
+    match_:
+      prefix: "+25800"
+    cluster: mock
+    priority: 1
+
+  - name: default-route
+    match_:
+      prefix: ""
+    cluster: vodacom
+    priority: 100
+
+# Admin API configuration
+admin:
+  address: "0.0.0.0:9090"
+  metrics: true
+  health: true
+
+# Global settings
+settings:
+  workers: 0  # 0 = auto-detect
+  json_logs: false
+  log_level: info
