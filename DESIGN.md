@@ -22,6 +22,252 @@ All features emerge from configuration - no mode flags.
 5. **Observable** - Prometheus metrics, structured logging
 6. **Deployable anywhere** - Binary, Docker, Kubernetes
 
+---
+
+## Ecosystem Architecture (Envoy Model)
+
+smppd follows the Envoy proxy model: a high-performance **data plane** that can be managed by various **control planes**. This separation enables an ecosystem of tools built on top of smppd.
+
+### The Envoy Lesson
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      CONTROL PLANES                             │
+├──────────────┬──────────────┬──────────────┬───────────────────┤
+│    Istio     │  Gloo Edge   │   Contour    │    Ambassador     │
+│   (mesh)     │  (API GW)    │  (ingress)   │    (API GW)       │
+└──────┬───────┴──────┬───────┴──────┬───────┴─────────┬─────────┘
+       │              │              │                 │
+       └──────────────┴───────┬──────┴─────────────────┘
+                              │ xDS API (standard interface)
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     ENVOY (Data Plane)                          │
+├─────────────────────────────────────────────────────────────────┤
+│   Listeners → Filter Chains → Clusters → Endpoints             │
+│   L3/L4/L7 filters, WASM, Lua, ext_authz, rate_limit           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+Envoy's power comes from being "just" a data plane:
+- **Data plane (Envoy)**: Fast, deterministic, does what it's told
+- **Control plane (Istio/etc)**: Smart, policy-driven, manages fleets
+
+### smppd Ecosystem Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      CONTROL PLANES                             │
+├──────────────┬──────────────┬──────────────┬───────────────────┤
+│  smppd-mesh  │ smppd-gateway│smppd-firewall│  smppd-operator   │
+│  (multi-DC)  │  (HTTP/API)  │  (security)  │   (Kubernetes)    │
+└──────┬───────┴──────┬───────┴──────┬───────┴─────────┬─────────┘
+       │              │              │                 │
+       └──────────────┴───────┬──────┴─────────────────┘
+                              │ MDS API (Message Discovery Service)
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    smppd-core (Data Plane)                      │
+├─────────────────────────────────────────────────────────────────┤
+│   Listeners → Filter Chains → Upstreams → Endpoints            │
+│   SMPP/HTTP/gRPC, auth, rate_limit, transform, firewall        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Component Separation
+
+| Component | Role | Analogy |
+|-----------|------|---------|
+| **smppd-core** | High-performance data plane | Envoy |
+| **smppd-control** | Fleet management, policy | Istio control plane |
+| **smppd-ui** | Web dashboard | Kiali |
+| **smppd-operator** | Kubernetes CRDs | Istio Operator |
+| **smppd-mesh** | Multi-node coordination | Istio mesh |
+| **smppd-gateway** | API gateway features | Gloo Edge |
+| **smppd-firewall** | Security policy engine | OPA/ext_authz |
+
+### Deployment Models
+
+**Model 1: Embedded (Simple)**
+```yaml
+# Everything in one binary - smppd
+# Control plane embedded, no external dependencies
+smppd --config /etc/smppd/smppd.yaml
+```
+Best for: Single node, simple deployments, getting started.
+
+**Model 2: External Control Plane (Fleet)**
+```yaml
+# Data plane nodes (stateless, many)
+smppd-core --mds-server grpc://control.smppd.local:9090
+
+# Control plane (stateful, few)
+smppd-control --storage postgres://... --nodes smppd-1,smppd-2,smppd-3
+```
+Best for: Multi-node, multi-region, centralized policy.
+
+**Model 3: Kubernetes Native**
+```yaml
+# Operator manages everything via CRDs
+apiVersion: smppd.io/v1
+kind: SmppCluster
+metadata:
+  name: production
+spec:
+  replicas: 3
+  upstreams:
+    - name: carrier-a
+      hosts: ["smsc1.carrier.com:2775"]
+---
+apiVersion: smppd.io/v1
+kind: SmppRoute
+metadata:
+  name: mozambique
+spec:
+  match:
+    destination: "+258*"
+  upstream: carrier-a
+```
+Best for: Cloud-native, GitOps, auto-scaling.
+
+### MDS: Message Discovery Service
+
+Like Envoy's xDS, smppd uses **MDS** (Message Discovery Service) for dynamic configuration:
+
+| Service | Purpose | Envoy Equivalent |
+|---------|---------|------------------|
+| **LDS** | Listener Discovery | LDS |
+| **UDS** | Upstream Discovery | CDS |
+| **RDS** | Route Discovery | RDS |
+| **EDS** | Endpoint Discovery | EDS |
+| **CDS** | Client Discovery | - (SMPP-specific) |
+| **FDS** | Firewall Discovery | - (SMPP-specific) |
+
+```protobuf
+service MessageDiscoveryService {
+  // Stream listeners configuration
+  rpc StreamListeners(stream DiscoveryRequest) returns (stream DiscoveryResponse);
+
+  // Stream upstreams configuration
+  rpc StreamUpstreams(stream DiscoveryRequest) returns (stream DiscoveryResponse);
+
+  // Stream routes configuration
+  rpc StreamRoutes(stream DiscoveryRequest) returns (stream DiscoveryResponse);
+
+  // Stream endpoints (hosts within upstreams)
+  rpc StreamEndpoints(stream DiscoveryRequest) returns (stream DiscoveryResponse);
+
+  // Stream client/ESME configuration
+  rpc StreamClients(stream DiscoveryRequest) returns (stream DiscoveryResponse);
+
+  // Stream firewall rules
+  rpc StreamFirewall(stream DiscoveryRequest) returns (stream DiscoveryResponse);
+
+  // Aggregated: all config in one stream
+  rpc StreamAggregated(stream DiscoveryRequest) returns (stream DiscoveryResponse);
+}
+```
+
+### Filter Chain Architecture
+
+Like Envoy, smppd processes messages through filter chains:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         FILTER CHAIN                            │
+├─────────┬─────────┬─────────┬─────────┬─────────┬──────────────┤
+│  Auth   │  Rate   │Firewall │Transform│ Route   │   Upstream   │
+│ Filter  │ Limit   │ Filter  │ Filter  │ Filter  │   Filter     │
+└────┬────┴────┬────┴────┬────┴────┬────┴────┬────┴───────┬──────┘
+     │         │         │         │         │            │
+     ▼         ▼         ▼         ▼         ▼            ▼
+  Verify   Check TPS   Spam/    Rewrite    Match      Send to
+  creds    quotas      Fraud    fields     rules      SMSC
+```
+
+**Built-in Filters:**
+- `auth` - Client authentication (system_id/password, mTLS, API key)
+- `rate_limit` - TPS limits, quotas, credit control
+- `firewall` - Content filtering, spam detection, fraud prevention
+- `transform` - Field rewriting, TLV manipulation, encoding
+- `route` - Destination matching, LCR, MNP lookup
+- `upstream` - Load balancing, failover, circuit breaker
+
+**Extension Points:**
+- `lua` - Inline Lua scripting
+- `wasm` - WebAssembly plugins (any language)
+- `go` - Native Go plugins
+- `grpc` - External gRPC services (like ext_authz)
+
+### Protocol Bridge Architecture
+
+smppd-core is protocol-agnostic at its core:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     PROTOCOL ADAPTERS                           │
+├──────────┬──────────┬──────────┬──────────┬────────────────────┤
+│   SMPP   │   HTTP   │   gRPC   │   AMQP   │      Future        │
+│  v3.3/4/5│  REST    │  Proto   │  Queue   │   RCS/WhatsApp     │
+└─────┬────┴─────┬────┴─────┬────┴─────┬────┴──────────┬─────────┘
+      │          │          │          │               │
+      └──────────┴──────────┴────┬─────┴───────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   CANONICAL MESSAGE FORMAT                      │
+│  (internal representation - protocol independent)               │
+└─────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      FILTER CHAIN                               │
+└─────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     PROTOCOL ADAPTERS                           │
+│              (convert back to target protocol)                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+This enables:
+- SMPP client → HTTP upstream (API aggregators)
+- HTTP client → SMPP upstream (web apps to carriers)
+- gRPC client → SMPP upstream (microservices)
+- SMPP client → AMQP queue → SMPP upstream (async processing)
+
+### Ecosystem Possibilities
+
+With this architecture, the community can build:
+
+| Project | Description | Built On |
+|---------|-------------|----------|
+| **smppd-mesh** | Multi-datacenter SMPP mesh with automatic failover | smppd-core + smppd-control |
+| **smppd-gateway** | HTTP/REST to SMPP gateway with OpenAPI | smppd-core + protocol bridge |
+| **smppd-firewall** | Standalone SMS firewall with ML models | smppd-core + firewall filters |
+| **smppd-simulator** | SMSC simulator for testing | smppd-core + fixture responses |
+| **smppd-analytics** | Real-time message analytics dashboard | smppd-core + metrics export |
+| **smppd-billing** | Usage metering and billing integration | smppd-core + CDR export |
+| **smppd-operator** | Kubernetes operator with CRDs | smppd-control + k8s API |
+
+### Why This Beats Melrose
+
+Melrose sells **separate products**:
+- SMPP Router (£375-£1500)
+- SMPP Load Balancer (separate license)
+- SMS Firewall (separate license)
+- Each with its own config, its own learning curve
+
+smppd provides **one ecosystem**:
+- Single data plane (smppd-core)
+- Pluggable control planes for different needs
+- All features available, enable what you need
+- Community can extend without forking
+- **$0 forever**
+
+---
+
 ### Internal Architecture (Envoy-inspired)
 
 ```mermaid
