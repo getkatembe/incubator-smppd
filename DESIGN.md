@@ -881,6 +881,27 @@ upstreams:
       recovery_time: 60s
       fallback: backup         # Upstream to failover to
 
+    # Maintenance scheduling
+    maintenance:
+      # Scheduled maintenance windows
+      windows:
+        - name: weekly-maintenance
+          schedule: "0 2 * * SUN"    # Cron: 2am every Sunday
+          duration: 2h
+          action: suspend            # suspend, drain, reduce_weight
+
+        - name: monthly-update
+          schedule: "0 3 1 * *"      # 3am first of month
+          duration: 4h
+          action: drain
+
+      # Automatic suspension on degradation
+      auto_suspend:
+        enabled: true
+        error_rate: 0.10             # 10% error rate
+        latency_p99: 1s              # p99 > 1s
+        duration: 5m                 # Suspend for 5 min
+
     # Circuit breaker (Envoy-style)
     circuit_breaker:
       max_connections: 100           # Max concurrent connections
@@ -1421,6 +1442,155 @@ middleware:
   # Metrics
   - type: metrics
     prometheus: true
+```
+
+---
+
+## DLR Error Code Harmonization
+
+Normalize delivery receipt error codes across carriers:
+
+```yaml
+dlr:
+  harmonization:
+    enabled: true
+
+    # Map carrier-specific codes to standard codes
+    mappings:
+      # Carrier A uses custom codes
+      carrier-a:
+        "001": { state: DELIVRD, error: 0 }
+        "002": { state: UNDELIV, error: 1 }
+        "003": { state: EXPIRED, error: 2 }
+        "ERR_NET": { state: UNDELIV, error: 6 }
+
+      # Carrier B uses different format
+      carrier-b:
+        "DELIVERED": { state: DELIVRD, error: 0 }
+        "FAILED": { state: UNDELIV, error: 1 }
+        "TIMEOUT": { state: EXPIRED, error: 2 }
+
+    # Standard error codes (output)
+    standard_codes:
+      0: "No error"
+      1: "Unknown subscriber"
+      2: "Expired"
+      3: "Rejected"
+      4: "Blacklisted"
+      5: "Unroutable"
+      6: "Network error"
+      7: "Invalid destination"
+      8: "Spam filter"
+
+    # DLR format normalization
+    format:
+      # Parse various DLR text formats
+      patterns:
+        - regex: "id:([^ ]+) sub:([^ ]+) dlvrd:([^ ]+) submit date:([^ ]+) done date:([^ ]+) stat:([^ ]+) err:([^ ]+)"
+        - regex: "id=([^&]+)&stat=([^&]+)&err=([^&]+)"
+
+      # Output format
+      output: "id:{id} sub:001 dlvrd:001 submit date:{submit_date} done date:{done_date} stat:{stat} err:{err} text:"
+```
+
+### DLR State Mapping
+
+```mermaid
+flowchart LR
+    subgraph CarrierA[Carrier A Codes]
+        A1[001] --> DELIVRD
+        A2[002] --> UNDELIV
+        A3[003] --> EXPIRED
+    end
+
+    subgraph CarrierB[Carrier B Codes]
+        B1[DELIVERED] --> DELIVRD
+        B2[FAILED] --> UNDELIV
+        B3[TIMEOUT] --> EXPIRED
+    end
+
+    subgraph Standard[Standard Output]
+        DELIVRD[DELIVRD / err:000]
+        UNDELIV[UNDELIV / err:001]
+        EXPIRED[EXPIRED / err:002]
+    end
+```
+
+---
+
+## Validity Period Enforcement
+
+Control message expiry and scheduling:
+
+```yaml
+validity:
+  # Global defaults
+  default: 24h                     # Default validity period
+  max: 72h                         # Maximum allowed
+  min: 5m                          # Minimum allowed
+
+  # Override per client
+  clients:
+    client-a:
+      default: 48h
+      max: 168h                    # 1 week
+
+  # Override per upstream
+  upstreams:
+    carrier-a:
+      max: 24h                     # Carrier limit
+      override_longer: true        # Reduce if client sends longer
+
+  # Enforcement
+  enforcement:
+    reject_invalid: true           # Reject if outside min/max
+    normalize: true                # Convert to absolute time
+
+  # Scheduled delivery
+  scheduling:
+    enabled: true
+    max_future: 30d                # Max schedule ahead
+    timezone: UTC
+```
+
+### Validity Period Flow
+
+```mermaid
+flowchart TD
+    A[submit_sm with validity] --> B{Has validity_period?}
+    B -->|No| C[Apply default]
+    B -->|Yes| D{Within limits?}
+    D -->|Too short| E{reject_invalid?}
+    D -->|Too long| F{override_longer?}
+    D -->|OK| G[Accept]
+    E -->|Yes| H[Reject ESME_RINVEXPIRY]
+    E -->|No| I[Apply minimum]
+    F -->|Yes| J[Reduce to max]
+    F -->|No| H
+    C --> G
+    I --> G
+    J --> G
+    G --> K[Forward to upstream]
+```
+
+### Scheduled Delivery
+
+```yaml
+# Client sends scheduled_delivery_time
+submit_sm:
+  scheduled_delivery_time: "251231120000000+"  # Dec 31, 2025 12:00
+
+# smppd behavior
+scheduling:
+  # Queue locally until time
+  queue:
+    enabled: true
+    storage: sqlite              # sqlite, redis
+
+  # Or forward to carrier (if supported)
+  forward:
+    enabled: false
+    carriers: [carrier-a]        # Carriers that support scheduling
 ```
 
 ---
