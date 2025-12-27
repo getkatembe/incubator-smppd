@@ -601,7 +601,7 @@ async fn submit_handler(
 
 | Phase | Milestone | Status |
 |-------|-----------|--------|
-| 1 | smppd starts with config | Pending |
+| 1 | smppd starts with config | ✅ Done |
 | 2 | SMPP listener (smpp-rs) | Pending |
 | 3 | Upstream connections | Pending |
 | 4 | Multi-carrier routing | Pending |
