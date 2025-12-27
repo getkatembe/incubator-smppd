@@ -318,11 +318,12 @@ type HealthChecker interface {
 }
 ```
 
-### ConfigSource Interface
+### config.Source Interface
 
 ```go
-// ConfigSource provides configuration (static or dynamic)
-type ConfigSource interface {
+// Source provides configuration (static or dynamic)
+// Located in internal/config/source.go
+type Source interface {
     // Load returns the current configuration
     Load() (*Config, error)
 
