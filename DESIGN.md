@@ -3714,7 +3714,7 @@ clients:
 | | A/B Testing | ✗ | ✓ Traffic split | 🏆 smppd |
 | | Canary Deploy | ✗ | ✓ Auto-rollback | 🏆 smppd |
 | | Geo Routing | ✗ | ✓ Region/zone | 🏆 smppd |
-| | Cost Optimization | ? | ✓ Least-cost | 🏆 smppd |
+| | LCR Maps | ✓ Basic MNC | ✓ Multi-factor LCR | 🏆 smppd |
 | **Security** |
 | | DDoS Protection | ✗ | ✓ Built-in | 🏆 smppd |
 | | Audit Logging | ✗ | ✓ Compliance | 🏆 smppd |
@@ -3744,6 +3744,69 @@ clients:
 | "£345/year support" | **Community + source code** - fix it yourself |
 | "Debian 12 only" | **Any Linux + Docker + K8s** - run anywhere |
 | "90-day trial" | **Forever free** - no trial, no expiry |
+
+### Detailed Documentation Comparison (scrollhelp.site)
+
+Based on [Melrose SMPP Router Documentation](https://melroselabs.scrollhelp.site/smpprouter/):
+
+| Category | Documented Feature | Melrose | smppd | Notes |
+|----------|-------------------|---------|-------|-------|
+| **ESME Config** |
+| | `systemid` | ✓ | ✓ `clients[].system_id` | |
+| | `password` / `password_hash` | ✓ | ✓ Both supported | |
+| | `sharedtargetsetid` | ✓ | ✓ `routes[].upstream` | Different approach, same result |
+| | `tpslimit` per ESME | ✓ | ✓ `rate_limit.messages_per_second` | |
+| | `binding_enabled` | ✓ | ✓ `enabled: true/false` | |
+| | `submits_enabled` | ✓ | ✓ `permissions.submit` | |
+| | `allowedip` whitelist | ✓ | ✓ `allowed_ips[]` | |
+| | `inboundmo` regex | ✓ | ✓ `filters.mo_pattern` | |
+| **Target Config** |
+| | `host` / `port` | ✓ | ✓ `hosts[].address` | |
+| | `systemid` / `password` | ✓ | ✓ `bind.system_id` | |
+| | `bindqty` (256 max) | ✓ 256 | ✓ `pool.max_connections` | Unlimited |
+| | `usetxrx` / `userxonly` | ✓ | ✓ `bind.type: transceiver/receiver` | |
+| | `tpslimit` per target | ✓ | ✓ `rate_limit` per upstream | |
+| | `weight` load balance | ✓ | ✓ `hosts[].weight` | |
+| | `admindown` toggle | ✓ | ✓ `maintenance.enabled` | + cron scheduling |
+| **Routing** |
+| | `routes-mt` rules | ✓ | ✓ `routes[]` | |
+| | Match: `exact` | ✓ | ✓ Glob + regex | |
+| | Match: `country` | ✓ | ✓ `destination_addr: "+258*"` | |
+| | Match: `ndc` | ✓ | ✓ `destination_addr: "+25884*"` | |
+| | Match: `regex` | ✓ | ✓ Full regex support | |
+| | Match: `mcc` | ✓ | ✓ MNP lookup integration | |
+| | Match: `mnc` | ✓ | ✓ `mnc: "01"` | |
+| | LCR maps | ✓ | ✓ `cost` per route | + multi-factor |
+| | ESME-specific routes | ✓ | ✓ `match.source_system_id` | |
+| | Global routes | ✓ | ✓ Default routes | |
+| **DLR Handling** |
+| | `dlr.default_system_id` | ✓ | ✓ `dlr.default_client` | |
+| | `dlr.disable_msgid_tracking` | ✓ | ✓ `dlr.tracking: false` | |
+| | DLR routing | ✓ | ✓ + harmonization | |
+| **Monitoring** |
+| | Prometheus `/metrics` | ✓ | ✓ + OpenTelemetry | |
+| | 70+ metrics | ✓ | ✓ 100+ metrics | |
+| | Grafana dashboards | ✓ | ✓ Built-in UI + Grafana | |
+| | CLI status | ✓ `smpproutercli` | ✓ `smppd status` | |
+| | Color-coded status | ✓ | ✓ + web dashboard | |
+| **Base Config** |
+| | `log.audit` | ✓ | ✓ `access_log` | Templated |
+| | `log.level` | ✓ | ✓ `log.level` | |
+| | `ipwhitelistonly` | ✓ | ✓ `listeners[].allowed_ips` | Per-listener |
+| | `smpp.max_connections_per_ip` | ✓ | ✓ `max_connections_per_ip` | |
+| | `smpp.port` | ✓ 2775 | ✓ Any port, any address | Multiple listeners |
+
+**Verdict: smppd matches 100% of documented Melrose features, plus:**
+- Multiple SMPP listeners (internal/external/TLS)
+- Per-listener TLS and access control
+- gRPC streaming config (xDS-style)
+- Hot restart with zero downtime
+- Circuit breaker and outlier detection
+- Web dashboard with real-time monitoring
+- OpenTelemetry distributed tracing
+- Go/WASM plugins for custom logic
+- SMS Firewall with ML spam detection
+- Built-in SMSC simulator for testing
 
 ---
 
