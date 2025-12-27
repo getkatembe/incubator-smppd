@@ -1633,6 +1633,319 @@ routes:
             dlr: { delay: 5s, state: DELIVRD }
 ```
 
+### Full PDU Coverage (SMPP 3.3, 3.4, 5.0)
+
+Mock responses support all SMPP operations across all protocol versions:
+
+```yaml
+# Complete PDU mock configuration
+mock:
+  # ═══════════════════════════════════════════════════════════════
+  # SESSION MANAGEMENT
+  # ═══════════════════════════════════════════════════════════════
+
+  bind_transmitter:
+    status: ESME_ROK
+    system_id: "SMSC"
+    # Optional fields (v3.4+)
+    sc_interface_version: 0x34      # SMPP version supported
+
+  bind_receiver:
+    status: ESME_ROK
+    system_id: "SMSC"
+
+  bind_transceiver:
+    status: ESME_ROK
+    system_id: "SMSC"
+    sc_interface_version: 0x50      # SMPP 5.0
+
+  outbind:                          # SMSC-initiated bind (v3.4+)
+    system_id: "SMSC"
+    password: ""
+
+  unbind:
+    status: ESME_ROK
+
+  # ═══════════════════════════════════════════════════════════════
+  # MESSAGE SUBMISSION
+  # ═══════════════════════════════════════════════════════════════
+
+  submit_sm:
+    status: ESME_ROK
+    message_id: "{{uuid}}"
+    # Generate DLR after delay
+    dlr:
+      delay: { min: 1s, max: 30s }
+      state: DELIVRD                # DELIVRD, UNDELIV, EXPIRED, etc.
+
+  submit_multi:                     # Submit to multiple destinations
+    status: ESME_ROK
+    message_id: "{{uuid}}"
+    unsuccess_smes: []              # List of failed destinations
+    # Or simulate partial failure:
+    # unsuccess_smes:
+    #   - dest_addr: "+258841111111"
+    #     error_status: ESME_RINVDSTADR
+
+  data_sm:                          # v3.4+ transaction mode
+    status: ESME_ROK
+    message_id: "{{uuid}}"
+
+  # ═══════════════════════════════════════════════════════════════
+  # MESSAGE DELIVERY (MO / DLR)
+  # ═══════════════════════════════════════════════════════════════
+
+  deliver_sm:                       # Expect deliver_sm_resp from client
+    # Configure how smppd handles client responses
+    timeout: 30s
+    on_timeout: retry               # retry, drop, queue
+    max_retries: 3
+
+  # ═══════════════════════════════════════════════════════════════
+  # MESSAGE QUERY/CONTROL
+  # ═══════════════════════════════════════════════════════════════
+
+  query_sm:
+    status: ESME_ROK
+    message_id: "{{request.message_id}}"
+    final_date: "{{now}}"
+    message_state: 2                # DELIVERED
+    error_code: 0
+
+  cancel_sm:
+    status: ESME_ROK
+    # Or reject cancellation:
+    # status: ESME_RCANCELFAIL
+
+  replace_sm:
+    status: ESME_ROK
+    # Or reject replacement:
+    # status: ESME_RREPLACEFAIL
+
+  # ═══════════════════════════════════════════════════════════════
+  # BROADCAST (SMPP 5.0)
+  # ═══════════════════════════════════════════════════════════════
+
+  broadcast_sm:                     # Cell broadcast
+    status: ESME_ROK
+    message_id: "{{uuid}}"
+    failed_broadcast_area_identifier: []
+
+  cancel_broadcast_sm:
+    status: ESME_ROK
+
+  query_broadcast_sm:
+    status: ESME_ROK
+    message_id: "{{request.message_id}}"
+    message_state: 2
+    broadcast_area_identifier: []
+    broadcast_area_success: []
+
+  # ═══════════════════════════════════════════════════════════════
+  # KEEP-ALIVE & ERRORS
+  # ═══════════════════════════════════════════════════════════════
+
+  enquire_link:
+    status: ESME_ROK
+    # Simulate slow SMSC:
+    # latency: 5s
+
+  generic_nack:
+    # When to send generic_nack
+    on_invalid_pdu: true
+    on_unknown_command: true
+
+  alert_notification:               # v3.4+ - SMSC alerts
+    # smppd can generate these to test client handling
+    source_addr: "SMSC"
+    esme_addr: "{{client.system_id}}"
+```
+
+### PDU Reference by Version
+
+| PDU | 3.3 | 3.4 | 5.0 | Direction | Mock Support |
+|-----|-----|-----|-----|-----------|--------------|
+| **Session** |
+| bind_transmitter | ✓ | ✓ | ✓ | ESME→SMSC | ✓ Response |
+| bind_receiver | ✓ | ✓ | ✓ | ESME→SMSC | ✓ Response |
+| bind_transceiver | ✓ | ✓ | ✓ | ESME→SMSC | ✓ Response |
+| outbind | | ✓ | ✓ | SMSC→ESME | ✓ Generate |
+| unbind | ✓ | ✓ | ✓ | Both | ✓ Response |
+| **Messaging** |
+| submit_sm | ✓ | ✓ | ✓ | ESME→SMSC | ✓ Response + DLR |
+| submit_multi | ✓ | ✓ | ✓ | ESME→SMSC | ✓ Response |
+| deliver_sm | ✓ | ✓ | ✓ | SMSC→ESME | ✓ Generate (MO/DLR) |
+| data_sm | | ✓ | ✓ | Both | ✓ Response |
+| **Query/Control** |
+| query_sm | ✓ | ✓ | ✓ | ESME→SMSC | ✓ Response |
+| cancel_sm | ✓ | ✓ | ✓ | ESME→SMSC | ✓ Response |
+| replace_sm | ✓ | ✓ | ✓ | ESME→SMSC | ✓ Response |
+| **Broadcast (5.0)** |
+| broadcast_sm | | | ✓ | ESME→SMSC | ✓ Response |
+| cancel_broadcast_sm | | | ✓ | ESME→SMSC | ✓ Response |
+| query_broadcast_sm | | | ✓ | ESME→SMSC | ✓ Response |
+| **Utility** |
+| enquire_link | ✓ | ✓ | ✓ | Both | ✓ Response |
+| alert_notification | | ✓ | ✓ | SMSC→ESME | ✓ Generate |
+| generic_nack | ✓ | ✓ | ✓ | Both | ✓ Response |
+
+### Error Codes Reference
+
+```yaml
+# All SMPP error codes available for mock responses
+error_codes:
+  # Success
+  ESME_ROK: 0x00000000              # No error
+
+  # Protocol errors
+  ESME_RINVMSGLEN: 0x00000001       # Invalid message length
+  ESME_RINVCMDLEN: 0x00000002       # Invalid command length
+  ESME_RINVCMDID: 0x00000003        # Invalid command ID
+  ESME_RINVBNDSTS: 0x00000004       # Invalid bind status
+  ESME_RALYBND: 0x00000005          # Already bound
+  ESME_RINVPRTFLG: 0x00000006       # Invalid priority flag
+  ESME_RINVREGDLVFLG: 0x00000007    # Invalid registered delivery flag
+  ESME_RSYSERR: 0x00000008          # System error
+
+  # Address errors
+  ESME_RINVSRCADR: 0x0000000A       # Invalid source address
+  ESME_RINVDSTADR: 0x0000000B       # Invalid destination address
+  ESME_RINVMSGID: 0x0000000C        # Invalid message ID
+  ESME_RBINDFAIL: 0x0000000D        # Bind failed
+  ESME_RINVPASWD: 0x0000000E        # Invalid password
+  ESME_RINVSYSID: 0x0000000F        # Invalid system ID
+
+  # Operation errors
+  ESME_RCANCELFAIL: 0x00000011      # Cancel failed
+  ESME_RREPLACEFAIL: 0x00000013     # Replace failed
+  ESME_RMSGQFUL: 0x00000014         # Message queue full
+  ESME_RINVSERTYP: 0x00000015       # Invalid service type
+
+  # Throttling
+  ESME_RTHROTTLED: 0x00000058       # Throttling error
+  ESME_RINVSCHED: 0x00000061        # Invalid scheduled delivery time
+  ESME_RINVEXPIRY: 0x00000062       # Invalid validity period
+
+  # v3.4+ errors
+  ESME_RINVDCS: 0x00000104          # Invalid data coding
+  ESME_RINVSRCTON: 0x00000105       # Invalid source TON
+  ESME_RINVSRCNPI: 0x00000106       # Invalid source NPI
+  ESME_RINVDSTTON: 0x00000107       # Invalid dest TON
+  ESME_RINVDSTNPI: 0x00000108       # Invalid dest NPI
+
+  # v5.0 errors
+  ESME_RINVBCASTAREAFMT: 0x0000010D # Invalid broadcast area format
+  ESME_RINVNUMBCAST: 0x0000010E     # Invalid number of broadcasts
+  ESME_RINVBCASTCNTTYPE: 0x0000010F # Invalid broadcast content type
+  ESME_RINVBCASTMSGCLASS: 0x00000110 # Invalid broadcast message class
+```
+
+### TLV Support (v3.4+)
+
+```yaml
+mock:
+  submit_sm:
+    status: ESME_ROK
+    message_id: "{{uuid}}"
+    # Include TLVs in response
+    tlvs:
+      # Delivery receipt
+      - tag: 0x001E                 # receipted_message_id
+        value: "{{message_id}}"
+      # Network error
+      - tag: 0x0423                 # network_error_code
+        value: [0x03, 0x00, 0x00]   # GSM, no error
+      # USSD (v3.4+)
+      - tag: 0x0501                 # ussd_service_op
+        value: 0x02
+      # Message payload (alternative to short_message)
+      - tag: 0x0424                 # message_payload
+        value: "{{short_message}}"
+
+# Common TLVs for mocking
+tlv_tags:
+  dest_addr_subunit: 0x0005
+  dest_network_type: 0x0006
+  dest_bearer_type: 0x0007
+  dest_telematics_id: 0x0008
+  source_addr_subunit: 0x000D
+  source_network_type: 0x000E
+  source_bearer_type: 0x000F
+  source_telematics_id: 0x0010
+  qos_time_to_live: 0x0017
+  payload_type: 0x0019
+  receipted_message_id: 0x001E
+  ms_msg_wait_facilities: 0x0030
+  privacy_indicator: 0x0201
+  source_subaddress: 0x0202
+  dest_subaddress: 0x0203
+  user_message_reference: 0x0204
+  user_response_code: 0x0205
+  language_indicator: 0x020D
+  sar_msg_ref_num: 0x020C
+  sar_total_segments: 0x020E
+  sar_segment_seqnum: 0x020F
+  sc_interface_version: 0x0210
+  callback_num_pres_ind: 0x0302
+  callback_num_atag: 0x0303
+  number_of_messages: 0x0304
+  callback_num: 0x0381
+  dpf_result: 0x0420
+  set_dpf: 0x0421
+  ms_availability_status: 0x0422
+  network_error_code: 0x0423
+  message_payload: 0x0424
+  delivery_failure_reason: 0x0425
+  more_messages_to_send: 0x0426
+  message_state: 0x0427
+  congestion_state: 0x0428         # v5.0
+  ussd_service_op: 0x0501
+  billing_identification: 0x060B   # v5.0
+  dest_addr_np_country: 0x0613     # v5.0
+  dest_addr_np_information: 0x0614 # v5.0
+  dest_addr_np_resolution: 0x0615  # v5.0
+```
+
+### Version-Specific Behavior
+
+```yaml
+mock:
+  # Different responses based on client SMPP version
+  submit_sm:
+    versions:
+      v33:
+        status: ESME_ROK
+        message_id: "{{seq:8}}"     # 8-char sequential for v3.3
+      v34:
+        status: ESME_ROK
+        message_id: "{{uuid}}"
+        tlvs:
+          - tag: 0x001E
+            value: "{{message_id}}"
+      v50:
+        status: ESME_ROK
+        message_id: "{{uuid}}"
+        tlvs:
+          - tag: 0x0428             # congestion_state
+            value: 0x00             # No congestion
+          - tag: 0x001E
+            value: "{{message_id}}"
+
+  # v5.0 flow control simulation
+  congestion:
+    enabled: true
+    states:
+      - level: 0                    # Idle
+        weight: 70
+      - level: 1                    # Low load
+        weight: 20
+      - level: 2                    # Medium
+        weight: 7
+      - level: 3                    # High
+        weight: 3
+        throttle: 0.5               # 50% throttling at high congestion
+```
+
 ### Message Injection (Testing MO/DLR)
 
 ```yaml
@@ -1643,6 +1956,10 @@ api:
     - POST /api/inject/mo
     # Inject DLR (simulates delivery receipt)
     - POST /api/inject/dlr
+    # Inject alert notification (v3.4+)
+    - POST /api/inject/alert
+    # Inject outbind request (v3.4+)
+    - POST /api/inject/outbind
 ```
 
 ```bash
@@ -1653,6 +1970,21 @@ curl -X POST http://localhost:8080/api/inject/mo \
 # Inject DLR
 curl -X POST http://localhost:8080/api/inject/dlr \
   -d '{"message_id": "abc123", "state": "DELIVRD"}'
+
+# Inject DLR with TLVs
+curl -X POST http://localhost:8080/api/inject/dlr \
+  -d '{
+    "message_id": "abc123",
+    "state": "DELIVRD",
+    "tlvs": {
+      "network_error_code": [3, 0, 0],
+      "receipted_message_id": "abc123"
+    }
+  }'
+
+# Inject alert notification
+curl -X POST http://localhost:8080/api/inject/alert \
+  -d '{"source": "SMSC", "esme_addr": "client-a"}'
 ```
 
 ### Quick Start (Testing Mode)
