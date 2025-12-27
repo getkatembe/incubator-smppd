@@ -1437,6 +1437,483 @@ sequenceDiagram
 
 ---
 
+## Number Lookup (HLR/MNP)
+
+Real-time number validation and routing optimization:
+
+```yaml
+lookup:
+  hlr:
+    enabled: true
+    provider: tyntec              # tyntec, infobip, hlr-lookups, custom
+    api_key: hlr_api_key
+    cache_ttl: 24h
+    timeout: 5s
+
+    # Custom provider
+    custom:
+      url: https://hlr.example.com/lookup
+      method: POST
+      headers:
+        Authorization: "Bearer {{api_key}}"
+      body: '{"msisdn": "{{msisdn}}"}'
+      response:
+        mcc: "$.mcc"
+        mnc: "$.mnc"
+        ported: "$.ported"
+        reachable: "$.reachable"
+
+  mnp:
+    enabled: true
+    database: /var/lib/smppd/mnp.db    # Local SQLite
+    # Or remote
+    provider: netinfo
+    api_key: mnp_api_key
+
+  # When to lookup
+  trigger:
+    on_submit: true                     # Lookup on every submit
+    on_cache_miss: true                 # Only when not cached
+    prefixes: ["+258", "+27", "+1"]     # Only these prefixes
+```
+
+### Lookup-Based Routing
+
+```yaml
+routes:
+  - name: ported-vodacom
+    match:
+      dest_addr: "+258*"
+      lookup:
+        mnc: "01"                       # Ported to Vodacom
+    upstream: vodacom-mz
+
+  - name: ported-movitel
+    match:
+      dest_addr: "+258*"
+      lookup:
+        mnc: "03"                       # Ported to Movitel
+    upstream: movitel-mz
+
+  - name: unreachable
+    match:
+      lookup:
+        reachable: false
+    response:
+      status: ESME_RINVDSTADR
+
+  - name: default-mz
+    match:
+      dest_addr: "+258*"
+    upstream: vodacom-mz              # Fallback if no lookup
+```
+
+### Lookup Cache
+
+```yaml
+lookup:
+  cache:
+    backend: redis                    # memory, redis, sqlite
+    redis:
+      address: redis:6379
+      prefix: smppd:lookup:
+    ttl:
+      hlr: 24h
+      mnp: 7d                         # MNP changes less frequently
+      unreachable: 1h                 # Retry unreachable sooner
+```
+
+---
+
+## OTP Handling
+
+Special routing and handling for one-time passwords:
+
+```yaml
+otp:
+  enabled: true
+
+  # Detection
+  detect:
+    patterns:
+      - "(?i)\\b(code|otp|pin|password)\\b.*\\b\\d{4,8}\\b"
+      - "(?i)\\bverif(y|ication)\\b"
+      - "(?i)\\b\\d{4,8}\\b.*\\b(code|otp)\\b"
+    sender_ids:
+      - "*-OTP"
+      - "*-VERIFY"
+      - "OTP"
+
+  # Priority handling
+  priority:
+    queue: high                       # high, normal, low
+    timeout: 30s                      # Shorter timeout for OTP
+    retries: 1                        # Fewer retries
+
+  # Routing
+  routing:
+    upstream: otp-carrier             # Dedicated OTP route
+    fallback: default                 # If OTP carrier fails
+
+  # Rate limiting (prevent OTP flooding)
+  rate_limit:
+    per_destination: 3/min            # Max 3 OTPs per number per minute
+    per_sender: 100/min               # Max 100 OTPs per sender per minute
+
+  # Masking in logs
+  logging:
+    mask_code: true                   # Log "Your code is ****" not "1234"
+```
+
+### OTP Metrics
+
+```yaml
+metrics:
+  otp:
+    - smppd_otp_sent_total
+    - smppd_otp_delivered_total
+    - smppd_otp_delivery_time_seconds
+    - smppd_otp_rate_limited_total
+```
+
+---
+
+## Dynamic Pricing
+
+Time-based and demand-based pricing:
+
+```yaml
+pricing:
+  enabled: true
+
+  # Base rates per route
+  routes:
+    mozambique:
+      base_cost: 0.02               # $0.02 per message
+      currency: USD
+
+    south-africa:
+      base_cost: 0.015
+      currency: USD
+
+  # Time-based multipliers
+  time_based:
+    - name: peak
+      schedule: "09:00-18:00"       # Business hours
+      timezone: Africa/Maputo
+      multiplier: 1.2               # 20% higher
+
+    - name: off-peak
+      schedule: "22:00-06:00"
+      multiplier: 0.8               # 20% lower
+
+    - name: weekend
+      schedule: "sat,sun"
+      multiplier: 0.9
+
+  # Demand-based pricing
+  demand_based:
+    enabled: true
+    window: 5m                      # Measure demand over 5 minutes
+    thresholds:
+      - tps: 100
+        multiplier: 1.0
+      - tps: 500
+        multiplier: 1.1
+      - tps: 1000
+        multiplier: 1.3
+      - tps: 2000
+        multiplier: 1.5
+
+  # Volume discounts
+  volume:
+    - threshold: 10000
+      discount: 0.05                # 5% off
+    - threshold: 100000
+      discount: 0.10                # 10% off
+    - threshold: 1000000
+      discount: 0.20                # 20% off
+
+  # Cost calculation
+  calculate:
+    formula: "base * time_multiplier * demand_multiplier * (1 - volume_discount)"
+```
+
+### Pricing API
+
+```
+GET  /api/pricing/quote?dest=+258841234567    # Get price quote
+GET  /api/pricing/rates                        # Current rates
+GET  /api/pricing/history?client=X&period=7d  # Pricing history
+```
+
+---
+
+## Message Compression
+
+Reduce payload size for IoT and low-bandwidth scenarios:
+
+```yaml
+compression:
+  enabled: true
+
+  # Content compression
+  content:
+    # GSM-7 optimization (pack 160 chars into 140 bytes)
+    gsm7_packing: true
+
+    # UDH compression
+    udh:
+      enabled: true
+      method: remove_padding
+
+    # Message deduplication
+    dedup:
+      enabled: true
+      window: 5m
+      action: drop                  # drop, merge, count
+
+  # Protocol-level compression (for upstreams that support it)
+  protocol:
+    smpp_v5:
+      enabled: true
+      algorithm: lz4               # lz4, zstd
+
+  # IoT-specific
+  iot:
+    enabled: false
+    short_codes:
+      # Map long commands to short codes
+      "TEMPERATURE": "T"
+      "HUMIDITY": "H"
+      "BATTERY": "B"
+      "STATUS": "S"
+    binary_encoding: true          # Encode numbers as binary
+```
+
+### Compression for Multipart
+
+```yaml
+compression:
+  multipart:
+    # Try to fit message in fewer parts
+    aggressive: true
+
+    # Use 8-bit reference numbers (saves 1 byte per part)
+    udh_8bit: true
+
+    # Remove unnecessary whitespace
+    trim: true
+
+    # Use GSM-7 extension characters efficiently
+    extension_optimization: true
+```
+
+---
+
+## Campaign Management
+
+Scheduled bulk messaging with personalization:
+
+```yaml
+campaigns:
+  enabled: true
+  storage: postgres               # postgres, sqlite
+
+  postgres:
+    dsn: postgres://user:pass@localhost/smppd
+
+  # Rate limiting for campaigns
+  throttle:
+    default_tps: 50               # Default TPS per campaign
+    max_tps: 500                  # Maximum TPS per campaign
+
+  # Scheduling
+  scheduling:
+    timezone: Africa/Maputo
+    blackout_hours: ["22:00-07:00"]  # No sends during these hours
+    blackout_days: ["sun"]           # No sends on Sundays
+```
+
+### Campaign API
+
+```
+POST /api/campaigns                          # Create campaign
+GET  /api/campaigns/{id}                     # Get campaign
+PUT  /api/campaigns/{id}                     # Update campaign
+DELETE /api/campaigns/{id}                   # Delete campaign
+POST /api/campaigns/{id}/start               # Start campaign
+POST /api/campaigns/{id}/pause               # Pause campaign
+POST /api/campaigns/{id}/cancel              # Cancel campaign
+GET  /api/campaigns/{id}/stats               # Campaign stats
+```
+
+### Campaign Definition
+
+```yaml
+# POST /api/campaigns
+campaign:
+  name: "Black Friday Sale"
+  sender_id: "MYSTORE"
+
+  # Recipients
+  recipients:
+    type: list                    # list, file, query
+    list:
+      - "+258841234567"
+      - "+258842345678"
+    # Or from file
+    file: s3://bucket/recipients.csv
+    # Or from query
+    query: "SELECT msisdn FROM customers WHERE active = true"
+
+  # Message template
+  message:
+    template: "Hi {{name}}, get 50% off with code {{code}}!"
+    variables:
+      name: "$.name"              # From recipient data
+      code:
+        type: generate
+        format: "BF{{random:4}}"
+
+  # Scheduling
+  schedule:
+    start: "2024-11-29T09:00:00"
+    end: "2024-11-29T18:00:00"
+    tps: 100                      # Messages per second
+
+  # Retry failed
+  retry:
+    enabled: true
+    max_attempts: 3
+    delay: 1h
+```
+
+### Campaign Stats
+
+```yaml
+stats:
+  total: 10000
+  sent: 8500
+  delivered: 8200
+  failed: 300
+  pending: 1500
+  delivery_rate: 96.5%
+  avg_delivery_time: 2.3s
+```
+
+---
+
+## Multi-tenancy
+
+Isolate multiple customers on a single smppd instance:
+
+```yaml
+tenants:
+  enabled: true
+  isolation: strict               # strict, shared
+
+  # Tenant definitions
+  list:
+    - id: tenant-a
+      name: "Company A"
+
+      # Tenant-specific listeners
+      listeners:
+        - smpp-tenant-a           # Dedicated port
+
+      # Tenant-specific upstreams
+      upstreams:
+        - vodacom-tenant-a
+
+      # Tenant-specific routes
+      routes:
+        - tenant-a-mz
+        - tenant-a-za
+
+      # Resource limits
+      limits:
+        max_tps: 1000
+        max_connections: 100
+        max_clients: 50
+
+      # Billing
+      billing:
+        plan: enterprise
+        credits: 1000000
+
+    - id: tenant-b
+      name: "Company B"
+      listeners: [smpp-tenant-b]
+      upstreams: [vodacom-tenant-b]
+      limits:
+        max_tps: 100
+        max_connections: 10
+```
+
+### Tenant Isolation
+
+```yaml
+isolation:
+  # Network isolation
+  network:
+    separate_listeners: true      # Each tenant gets own port
+    ip_whitelist_per_tenant: true
+
+  # Data isolation
+  data:
+    separate_storage: true        # Separate databases
+    separate_queues: true         # Separate message queues
+
+  # Credential isolation
+  credentials:
+    system_id_prefix: true        # tenant-a:client-1
+    separate_passwords: true
+
+  # Metrics isolation
+  metrics:
+    per_tenant: true              # Separate Prometheus labels
+    tenant_label: "tenant"
+```
+
+### Tenant API
+
+```
+POST /api/tenants                           # Create tenant
+GET  /api/tenants/{id}                      # Get tenant
+PUT  /api/tenants/{id}                      # Update tenant
+DELETE /api/tenants/{id}                    # Delete tenant
+GET  /api/tenants/{id}/stats                # Tenant stats
+GET  /api/tenants/{id}/clients              # Tenant clients
+POST /api/tenants/{id}/clients              # Create client for tenant
+```
+
+### Tenant Routing
+
+```yaml
+# Routes scoped to tenant
+routes:
+  - name: tenant-a-mz
+    tenant: tenant-a              # Only for this tenant
+    match:
+      dest_addr: "+258*"
+    upstream: vodacom-tenant-a
+
+  - name: tenant-b-mz
+    tenant: tenant-b
+    match:
+      dest_addr: "+258*"
+    upstream: vodacom-tenant-b
+
+  # Shared route (all tenants)
+  - name: global-backup
+    match:
+      dest_addr: "*"
+    upstream: backup-carrier
+```
+
+---
+
 ## Mock Responses
 
 Routes can respond directly without forwarding to an upstream. This enables testing, simulation, and hybrid deployments using the same configuration language.
