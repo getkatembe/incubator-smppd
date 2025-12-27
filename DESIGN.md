@@ -1635,130 +1635,136 @@ routes:
 
 ### Full PDU Coverage (SMPP 3.3, 3.4, 5.0)
 
-Mock responses support all SMPP operations across all protocol versions:
+Routes with `response:` support all SMPP operations. No separate "mock" configuration - it's all routes.
 
 ```yaml
-# Complete PDU mock configuration
-mock:
-  # ═══════════════════════════════════════════════════════════════
-  # SESSION MANAGEMENT
-  # ═══════════════════════════════════════════════════════════════
+routes:
 
-  bind_transmitter:
-    status: ESME_ROK
-    system_id: "SMSC"
-    # Optional fields (v3.4+)
-    sc_interface_version: 0x34      # SMPP version supported
+  # submit_sm responses
 
-  bind_receiver:
-    status: ESME_ROK
-    system_id: "SMSC"
+  - name: submit-success
+    match: { dest_addr: "+99900*" }
+    response:
+      submit_sm:
+        status: ESME_ROK
+        message_id: "{{uuid}}"
+        dlr:
+          delay: { min: 1s, max: 30s }
+          state: DELIVRD
 
-  bind_transceiver:
-    status: ESME_ROK
-    system_id: "SMSC"
-    sc_interface_version: 0x50      # SMPP 5.0
+  - name: submit-failure
+    match: { dest_addr: "+99901*" }
+    response:
+      submit_sm:
+        status: ESME_RINVDSTADR
 
-  outbind:                          # SMSC-initiated bind (v3.4+)
-    system_id: "SMSC"
-    password: ""
 
-  unbind:
-    status: ESME_ROK
+  # submit_multi responses
 
-  # ═══════════════════════════════════════════════════════════════
-  # MESSAGE SUBMISSION
-  # ═══════════════════════════════════════════════════════════════
+  - name: submit-multi-partial
+    match: { dest_addr: "+99902*" }
+    response:
+      submit_multi:
+        status: ESME_ROK
+        message_id: "{{uuid}}"
+        unsuccess_smes:
+          - dest_addr: "+258841111111"
+            error_status: ESME_RINVDSTADR
 
-  submit_sm:
-    status: ESME_ROK
-    message_id: "{{uuid}}"
-    # Generate DLR after delay
-    dlr:
-      delay: { min: 1s, max: 30s }
-      state: DELIVRD                # DELIVRD, UNDELIV, EXPIRED, etc.
 
-  submit_multi:                     # Submit to multiple destinations
-    status: ESME_ROK
-    message_id: "{{uuid}}"
-    unsuccess_smes: []              # List of failed destinations
-    # Or simulate partial failure:
-    # unsuccess_smes:
-    #   - dest_addr: "+258841111111"
-    #     error_status: ESME_RINVDSTADR
+  # data_sm responses (v3.4+)
 
-  data_sm:                          # v3.4+ transaction mode
-    status: ESME_ROK
-    message_id: "{{uuid}}"
+  - name: data-sm-success
+    match: { dest_addr: "+99903*" }
+    response:
+      data_sm:
+        status: ESME_ROK
+        message_id: "{{uuid}}"
 
-  # ═══════════════════════════════════════════════════════════════
-  # MESSAGE DELIVERY (MO / DLR)
-  # ═══════════════════════════════════════════════════════════════
 
-  deliver_sm:                       # Expect deliver_sm_resp from client
-    # Configure how smppd handles client responses
-    timeout: 30s
-    on_timeout: retry               # retry, drop, queue
-    max_retries: 3
+  # query_sm responses
 
-  # ═══════════════════════════════════════════════════════════════
-  # MESSAGE QUERY/CONTROL
-  # ═══════════════════════════════════════════════════════════════
+  - name: query-delivered
+    match: { dest_addr: "+99904*" }
+    response:
+      query_sm:
+        status: ESME_ROK
+        message_state: 2            # DELIVERED
+        final_date: "{{now}}"
+        error_code: 0
 
-  query_sm:
-    status: ESME_ROK
-    message_id: "{{request.message_id}}"
-    final_date: "{{now}}"
-    message_state: 2                # DELIVERED
-    error_code: 0
 
-  cancel_sm:
-    status: ESME_ROK
-    # Or reject cancellation:
-    # status: ESME_RCANCELFAIL
+  # cancel_sm / replace_sm responses
 
-  replace_sm:
-    status: ESME_ROK
-    # Or reject replacement:
-    # status: ESME_RREPLACEFAIL
+  - name: cancel-success
+    match: { dest_addr: "+99905*" }
+    response:
+      cancel_sm:
+        status: ESME_ROK
 
-  # ═══════════════════════════════════════════════════════════════
-  # BROADCAST (SMPP 5.0)
-  # ═══════════════════════════════════════════════════════════════
+  - name: cancel-failure
+    match: { dest_addr: "+99906*" }
+    response:
+      cancel_sm:
+        status: ESME_RCANCELFAIL
 
-  broadcast_sm:                     # Cell broadcast
-    status: ESME_ROK
-    message_id: "{{uuid}}"
-    failed_broadcast_area_identifier: []
+  - name: replace-success
+    match: { dest_addr: "+99907*" }
+    response:
+      replace_sm:
+        status: ESME_ROK
 
-  cancel_broadcast_sm:
-    status: ESME_ROK
 
-  query_broadcast_sm:
-    status: ESME_ROK
-    message_id: "{{request.message_id}}"
-    message_state: 2
-    broadcast_area_identifier: []
-    broadcast_area_success: []
+  # broadcast_sm responses (v5.0)
 
-  # ═══════════════════════════════════════════════════════════════
-  # KEEP-ALIVE & ERRORS
-  # ═══════════════════════════════════════════════════════════════
+  - name: broadcast-success
+    match: { dest_addr: "+99908*" }
+    response:
+      broadcast_sm:
+        status: ESME_ROK
+        message_id: "{{uuid}}"
+        failed_broadcast_area_identifier: []
 
-  enquire_link:
-    status: ESME_ROK
-    # Simulate slow SMSC:
-    # latency: 5s
+  - name: query-broadcast
+    match: { dest_addr: "+99909*" }
+    response:
+      query_broadcast_sm:
+        status: ESME_ROK
+        message_state: 2
 
-  generic_nack:
-    # When to send generic_nack
-    on_invalid_pdu: true
-    on_unknown_command: true
+# ═══════════════════════════════════════════════════════════════
+# Listener-level defaults (session PDUs)
+# ═══════════════════════════════════════════════════════════════
+listeners:
+  - name: smpp-test
+    type: smpp
+    address: :2775
 
-  alert_notification:               # v3.4+ - SMSC alerts
-    # smppd can generate these to test client handling
-    source_addr: "SMSC"
-    esme_addr: "{{client.system_id}}"
+    # Default responses for session management PDUs
+    defaults:
+      bind_transmitter:
+        status: ESME_ROK
+        system_id: "SMSC"
+        sc_interface_version: 0x34
+
+      bind_receiver:
+        status: ESME_ROK
+        system_id: "SMSC"
+
+      bind_transceiver:
+        status: ESME_ROK
+        system_id: "SMSC"
+        sc_interface_version: 0x50
+
+      unbind:
+        status: ESME_ROK
+
+      enquire_link:
+        status: ESME_ROK
+
+      generic_nack:
+        on_invalid_pdu: true
+        on_unknown_command: true
 ```
 
 ### PDU Reference by Version
@@ -2104,47 +2110,195 @@ routes:
 
 ## Clients
 
-ESME authentication and authorization:
+ESME authentication, authorization, and explicit access control.
+
+**Principle:** Nothing is implicit. Clients must be explicitly granted access to listeners, routes, and upstreams.
 
 ```yaml
 clients:
-  - system_id: client-a
-    password: client_a_pass
+
+  # Production client - full access to real carriers
+
+  - system_id: prod-client
+    password: prod_password
+
+    # EXPLICIT: Which listeners can this client connect to?
+    listeners:
+      - smpp-external              # Can connect to external listener
+      - smpp-tls                   # Can connect to TLS listener
+      # NOT smpp-internal          # Cannot use internal listener
+
+    # EXPLICIT: Which routes can this client use?
+    routes:
+      - mozambique                 # Can route to Mozambique
+      - south-africa               # Can route to South Africa
+      - default                    # Can use default route
+      # NOT test-*                 # Cannot use test routes
+
+    # EXPLICIT: Which upstreams can this client reach?
+    upstreams:
+      - vodacom-mz                 # Can reach Vodacom
+      - mtn-za                     # Can reach MTN
+      # NOT test-upstream          # Cannot reach test upstream
 
     # IP restrictions
     allowed_ips:
-      - 192.168.1.0/24
       - 10.0.0.0/8
-
-    # Bind restrictions
-    bind_types: [transmitter, transceiver]
-    max_connections: 10
 
     # Rate limiting
     rate_limit:
       messages_per_second: 1000
-      window_size: 5000  # Max in-flight
 
-    # Address restrictions
-    addresses:
-      source:
-        allowed: ["MYAPP", "CLIENT-A"]
-      destination:
-        blocked: ["+1900*", "+1976*"]  # Block premium
 
-    # Force specific upstream
-    upstream: premium-carrier
+  # Test client - only test routes (mocked responses)
 
-    # Metadata
-    tier: premium
-    tags:
-      billing_id: "12345"
+  - system_id: test-client
+    password: test_password
 
-  - system_id: client-b
-    password: client_b_pass
-    rate_limit:
-      messages_per_second: 100
-    tier: standard
+    listeners:
+      - smpp-internal              # Only internal listener
+
+    routes:
+      - test-success               # Route with response: (mocked)
+      - test-failure               # Route with response: (mocked)
+      - test-chaos                 # Route with response: (mocked)
+      # NOT mozambique             # Cannot reach real carriers
+
+    upstreams: []                  # No upstream access - only mocked responses
+
+    allowed_ips:
+      - 192.168.1.0/24
+
+
+  # Staging client - mix of real and mocked
+
+  - system_id: staging-client
+    password: staging_password
+
+    listeners:
+      - smpp-internal
+
+    routes:
+      - mozambique                 # Real carrier
+      - test-success               # Mocked response
+      - staging-chaos              # Chaos testing
+
+    upstreams:
+      - vodacom-mz                 # Can reach real Vodacom
+      # But test routes use response: not upstream:
+
+
+  # Wildcard patterns
+
+  - system_id: admin-client
+    password: admin_password
+
+    listeners: ["*"]               # All listeners
+    routes: ["*"]                  # All routes
+    upstreams: ["*"]               # All upstreams
+
+    allowed_ips:
+      - 10.0.0.1/32                # Single admin IP
+```
+
+### Access Control Examples
+
+```yaml
+# Full configuration showing explicit access control
+listeners:
+  - name: smpp-external
+    type: smpp
+    address: :2775
+
+  - name: smpp-internal
+    type: smpp
+    address: 10.0.0.1:2775
+
+  - name: smpp-tls
+    type: smpp
+    address: :8775
+    tls:
+      cert: /etc/smppd/certs/server.crt
+      key: /etc/smppd/certs/server.key
+
+upstreams:
+  - name: vodacom-mz
+    hosts:
+      - address: smsc.vodacom.co.mz:2775
+    bind:
+      system_id: smppd_user
+      password: smppd_pass
+
+  - name: mtn-za
+    hosts:
+      - address: smsc.mtn.co.za:2775
+    bind:
+      system_id: smppd_mtn
+      password: smppd_mtn_pass
+
+routes:
+  # Real carrier routes
+  - name: mozambique
+    match: { dest_addr: "+258*" }
+    upstream: vodacom-mz
+
+  - name: south-africa
+    match: { dest_addr: "+27*" }
+    upstream: mtn-za
+
+  # Test routes - use response: instead of upstream:
+  - name: test-success
+    match: { dest_addr: "+99900*" }
+    response:
+      status: ESME_ROK
+      message_id: "{{uuid}}"
+
+  - name: test-failure
+    match: { dest_addr: "+99901*" }
+    response:
+      status: ESME_RINVDSTADR
+
+  - name: default
+    match: { dest_addr: "*" }
+    upstream: vodacom-mz
+
+clients:
+  - system_id: prod-client
+    password: prod_pass
+    listeners: [smpp-external, smpp-tls]
+    routes: [mozambique, south-africa, default]
+    upstreams: [vodacom-mz, mtn-za]
+
+  - system_id: test-client
+    password: test_pass
+    listeners: [smpp-internal]
+    routes: [test-success, test-failure]
+    upstreams: []                  # No upstreams - only mocked responses
+```
+
+### Access Denied Behavior
+
+```yaml
+# What happens when access is denied
+access_control:
+  # Client tries to use listener they don't have access to
+  listener_denied:
+    action: reject_bind
+    status: ESME_RBINDFAIL
+
+  # Client tries to use route they don't have access to
+  route_denied:
+    action: reject_submit
+    status: ESME_RINVDSTADR        # Or custom error
+
+  # Client tries to reach upstream they don't have access to
+  upstream_denied:
+    action: reject_submit
+    status: ESME_RSYSERR
+
+  # Log access violations
+  log_violations: true
+  alert_on_violation: true
 ```
 
 ### External Authentication
