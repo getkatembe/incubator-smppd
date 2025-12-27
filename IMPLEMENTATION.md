@@ -142,10 +142,61 @@ smppd/
 │   │   ├── harmonizer.go        # Error code harmonization
 │   │   ├── codes.go             # Carrier code mappings
 │   │   └── tracker.go           # DLR correlation
-│   └── extension/               # Extension system
-│       ├── registry.go          # Extension registry
-│       ├── recorder.go          # Traffic recorder
-│       └── replayer.go          # Traffic replayer
+│   ├── extension/               # Extension system
+│   │   ├── registry.go          # Extension registry
+│   │   ├── recorder.go          # Traffic recorder
+│   │   └── replayer.go          # Traffic replayer
+│   ├── hlr/                     # Number lookup
+│   │   ├── lookup.go            # HLR/MNP lookup interface
+│   │   ├── cache.go             # Lookup result cache
+│   │   └── providers/           # Lookup providers
+│   │       ├── tyntec.go        # Tyntec HLR
+│   │       └── hlrlookup.go     # HLRLookup.com
+│   ├── otp/                     # OTP handling
+│   │   ├── detector.go          # OTP pattern detection
+│   │   └── priority.go          # Priority routing for OTP
+│   ├── pricing/                 # Dynamic pricing
+│   │   ├── engine.go            # Pricing engine
+│   │   ├── rules.go             # Pricing rules
+│   │   └── calculator.go        # Cost calculation
+│   ├── compression/             # Message compression
+│   │   ├── gsm7.go              # GSM-7 packing
+│   │   └── multipart.go         # Multipart optimization
+│   ├── campaign/                # Campaign management
+│   │   ├── manager.go           # Campaign lifecycle
+│   │   ├── scheduler.go         # Scheduled sending
+│   │   └── throttle.go          # Rate control
+│   ├── tenant/                  # Multi-tenancy
+│   │   ├── manager.go           # Tenant management
+│   │   ├── isolation.go         # Resource isolation
+│   │   └── quota.go             # Tenant quotas
+│   ├── cdr/                     # CDR export
+│   │   ├── collector.go         # CDR collection
+│   │   ├── exporter.go          # Export interface
+│   │   └── exporters/           # Export destinations
+│   │       ├── file.go          # File export
+│   │       ├── s3.go            # S3 export
+│   │       └── kafka.go         # Kafka export
+│   ├── webhook/                 # Webhook delivery
+│   │   ├── dispatcher.go        # Webhook dispatch
+│   │   ├── retry.go             # Retry logic
+│   │   └── signer.go            # Request signing
+│   ├── archive/                 # Message archival
+│   │   ├── archiver.go          # Archive interface
+│   │   ├── storage.go           # Archive storage
+│   │   └── search.go            # Archive search
+│   ├── senderid/                # Sender ID management
+│   │   ├── registry.go          # Sender ID registry
+│   │   ├── validator.go         # Validation rules
+│   │   └── rotation.go          # ID rotation
+│   ├── consent/                 # Opt-out / Consent
+│   │   ├── manager.go           # Consent management
+│   │   ├── suppression.go       # Suppression list
+│   │   └── stop.go              # STOP keyword handling
+│   └── dlt/                     # DLT Registration (India)
+│       ├── registry.go          # DLT template registry
+│       ├── validator.go         # Template validation
+│       └── scrubbing.go         # Header scrubbing
 ├── api/
 │   └── smppd/
 │       └── v1/
@@ -432,6 +483,276 @@ extensions:
     speed: 2.0  # 2x speed
 ```
 
+### Phase 17: Number Lookup (HLR/MNP)
+
+**Goal:** Real-time number portability and validity lookup
+
+```
+internal/hlr/lookup.go
+internal/hlr/cache.go
+internal/hlr/providers/tyntec.go
+internal/hlr/providers/hlrlookup.go
+internal/filter/hlr/hlr.go
+```
+
+**Deliverable:** Route based on actual carrier, not prefix
+
+```yaml
+hlr:
+  provider: tyntec
+  api_key: ${TYNTEC_API_KEY}
+  cache_ttl: 24h
+
+routes:
+  - match:
+      hlr_network: "Vodacom"
+    route:
+      cluster: vodacom
+```
+
+### Phase 18: OTP Handling
+
+**Goal:** Detect and prioritize OTP messages
+
+```
+internal/otp/detector.go
+internal/otp/priority.go
+internal/filter/otp/otp.go
+```
+
+**Deliverable:** OTP messages get priority routing
+
+```yaml
+otp:
+  patterns:
+    - "\\b\\d{4,8}\\b"
+    - "OTP|PIN|code|verify"
+  priority_cluster: fast-route
+  metrics: true
+```
+
+### Phase 19: Dynamic Pricing
+
+**Goal:** Time-based and volume-based pricing
+
+```
+internal/pricing/engine.go
+internal/pricing/rules.go
+internal/pricing/calculator.go
+internal/filter/pricing/pricing.go
+```
+
+**Deliverable:** Cost varies by time, volume, destination
+
+```yaml
+pricing:
+  default: 0.01
+  rules:
+    - match: { dest_prefix: "258" }
+      price: 0.008
+    - match: { time: "00:00-06:00" }
+      discount: 0.2
+    - match: { volume_tier: ">10000" }
+      discount: 0.15
+```
+
+### Phase 20: Message Compression
+
+**Goal:** Optimize message encoding
+
+```
+internal/compression/gsm7.go
+internal/compression/multipart.go
+internal/filter/compression/compression.go
+```
+
+**Deliverable:** Reduce multipart messages, pack GSM-7
+
+```yaml
+compression:
+  gsm7_packing: true
+  multipart_optimization: true
+  unicode_to_gsm7: true  # Convert when possible
+```
+
+### Phase 21: Campaign Management
+
+**Goal:** Bulk message campaigns with scheduling
+
+```
+internal/campaign/manager.go
+internal/campaign/scheduler.go
+internal/campaign/throttle.go
+internal/admin/campaign.go
+```
+
+**Deliverable:** Upload CSV, schedule delivery, track progress
+
+```yaml
+campaigns:
+  storage: postgres
+  max_concurrent: 10
+  default_throttle: 100/s
+```
+
+### Phase 22: Multi-tenancy
+
+**Goal:** Isolated tenant environments
+
+```
+internal/tenant/manager.go
+internal/tenant/isolation.go
+internal/tenant/quota.go
+internal/filter/tenant/tenant.go
+```
+
+**Deliverable:** Per-tenant config, quotas, billing
+
+```yaml
+tenants:
+  - id: acme
+    quotas:
+      messages_per_day: 100000
+      connections: 10
+    routes: [acme-routes]
+    upstreams: [acme-vodacom]
+```
+
+### Phase 23: CDR Export
+
+**Goal:** Call detail records for billing/analytics
+
+```
+internal/cdr/collector.go
+internal/cdr/exporter.go
+internal/cdr/exporters/file.go
+internal/cdr/exporters/s3.go
+internal/cdr/exporters/kafka.go
+```
+
+**Deliverable:** Real-time CDR export
+
+```yaml
+cdr:
+  format: json
+  exporters:
+    - type: kafka
+      brokers: [kafka:9092]
+      topic: cdr
+    - type: s3
+      bucket: cdr-archive
+      prefix: daily/
+```
+
+### Phase 24: Webhooks
+
+**Goal:** HTTP callbacks for events
+
+```
+internal/webhook/dispatcher.go
+internal/webhook/retry.go
+internal/webhook/signer.go
+```
+
+**Deliverable:** DLR/MO delivery via webhook
+
+```yaml
+webhooks:
+  - url: https://api.example.com/sms/callback
+    events: [dlr, mo]
+    secret: ${WEBHOOK_SECRET}
+    retry:
+      max_attempts: 5
+      backoff: exponential
+```
+
+### Phase 25: Message Archival
+
+**Goal:** Long-term message storage for compliance
+
+```
+internal/archive/archiver.go
+internal/archive/storage.go
+internal/archive/search.go
+```
+
+**Deliverable:** Searchable message archive
+
+```yaml
+archive:
+  enabled: true
+  retention: 365d
+  storage:
+    type: s3
+    bucket: sms-archive
+  encryption: aes-256-gcm
+```
+
+### Phase 26: Sender ID Management
+
+**Goal:** Sender ID validation and rotation
+
+```
+internal/senderid/registry.go
+internal/senderid/validator.go
+internal/senderid/rotation.go
+internal/filter/senderid/senderid.go
+```
+
+**Deliverable:** Per-client sender ID rules
+
+```yaml
+sender_ids:
+  - client: acme
+    allowed: [ACME, AcmeCorp]
+    default: ACME
+  - client: "*"
+    blocked: [BANK, GOVT]
+```
+
+### Phase 27: Opt-out / Consent
+
+**Goal:** STOP keyword and suppression lists
+
+```
+internal/consent/manager.go
+internal/consent/suppression.go
+internal/consent/stop.go
+internal/filter/consent/consent.go
+```
+
+**Deliverable:** Automatic opt-out handling
+
+```yaml
+consent:
+  stop_keywords: [STOP, UNSUBSCRIBE, QUIT]
+  suppression_storage: redis
+  auto_reply: "You have been unsubscribed"
+```
+
+### Phase 28: DLT Registration (India)
+
+**Goal:** TRAI DLT compliance for India
+
+```
+internal/dlt/registry.go
+internal/dlt/validator.go
+internal/dlt/scrubbing.go
+internal/filter/dlt/dlt.go
+```
+
+**Deliverable:** Template validation, header scrubbing
+
+```yaml
+dlt:
+  enabled: true
+  entity_id: "1234567890"
+  templates:
+    - id: "TPL001"
+      pattern: "Your OTP is {#var#}"
+  scrub_headers: true
+```
+
 ## Key Interfaces
 
 ### Filter Interface
@@ -699,3 +1020,15 @@ require (
 | 14 | Message queues | Pending |
 | 15 | Alerting rules | Pending |
 | 16 | Record/Replay extensions | Pending |
+| 17 | Number lookup (HLR/MNP) | Pending |
+| 18 | OTP handling | Pending |
+| 19 | Dynamic pricing | Pending |
+| 20 | Message compression | Pending |
+| 21 | Campaign management | Pending |
+| 22 | Multi-tenancy | Pending |
+| 23 | CDR export | Pending |
+| 24 | Webhooks | Pending |
+| 25 | Message archival | Pending |
+| 26 | Sender ID management | Pending |
+| 27 | Opt-out / Consent | Pending |
+| 28 | DLT registration (India) | Pending |
