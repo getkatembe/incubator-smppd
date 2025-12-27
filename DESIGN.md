@@ -28,7 +28,6 @@ All features emerge from configuration - no mode flags.
 graph TB
     subgraph MainThread[Main Goroutine]
         CFG[Config Manager]
-        XDS[xDS Client]
         AGG[Stats Aggregator]
     end
 
@@ -1465,60 +1464,28 @@ graph TB
     N3 --> REDIS
 ```
 
-### Dynamic Configuration (xDS)
+### Dynamic Configuration
 
 ```yaml
-# Static bootstrap + dynamic resources
-dynamic_resources:
-  # Listener Discovery Service
-  lds:
-    cluster: xds-cluster
-    refresh_delay: 5s
+config:
+  # File-based (default)
+  file:
+    path: /etc/smppd/smppd.yaml
+    watch: true              # Auto-reload on change
 
-  # Cluster (Upstream) Discovery Service
-  cds:
-    cluster: xds-cluster
-    refresh_delay: 5s
-
-  # Route Discovery Service
-  rds:
-    cluster: xds-cluster
-    route_config_name: default_routes
-
-# xDS server cluster
-upstreams:
-  - name: xds-cluster
-    type: static
-    hosts:
-      - address: xds.example.com:18000
-    bind:
-      type: grpc
+  # Or remote config server
+  remote:
+    url: https://config.example.com/smppd
+    interval: 30s
+    auth:
+      type: bearer
+      token: config_token
 ```
 
-```mermaid
-sequenceDiagram
-    participant smppd
-    participant xDS as xDS Server
-
-    smppd->>xDS: DiscoveryRequest (LDS)
-    xDS-->>smppd: DiscoveryResponse (Listeners)
-
-    smppd->>xDS: DiscoveryRequest (CDS)
-    xDS-->>smppd: DiscoveryResponse (Upstreams)
-
-    smppd->>xDS: DiscoveryRequest (RDS)
-    xDS-->>smppd: DiscoveryResponse (Routes)
-
-    Note over smppd: Apply config atomically
-
-    xDS-->>smppd: Push update (new routes)
-    smppd->>xDS: ACK
-```
-
-- File-based config for bootstrap
-- xDS streaming for dynamic updates
-- Atomic config application
-- Version tracking, NACK on errors
+- File watch with inotify
+- Remote polling with ETag/If-Modified-Since
+- Atomic apply (validate before swap)
+- Graceful drain of old connections on upstream changes
 
 ### Clustering
 
