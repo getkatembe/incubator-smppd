@@ -1,11 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
-use tracing::{info, Level};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing::info;
 
 use smppd::bootstrap::Server;
 use smppd::config::Config;
+use smppd::telemetry::{init_tracing, TracingConfig};
 
 #[derive(Parser, Debug)]
 #[command(name = "smppd")]
@@ -15,50 +15,28 @@ struct Args {
     #[arg(short, long, value_name = "FILE")]
     config: PathBuf,
 
-    /// Log level (trace, debug, info, warn, error)
-    #[arg(short, long, default_value = "info")]
-    log_level: Level,
-
-    /// Log format (json, pretty)
-    #[arg(long, default_value = "pretty")]
-    log_format: LogFormat,
-
     /// Validate config and exit
     #[arg(long)]
     validate: bool,
-}
-
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum LogFormat {
-    Json,
-    Pretty,
-}
-
-fn init_logging(level: Level, format: LogFormat) {
-    let filter = EnvFilter::from_default_env()
-        .add_directive(level.into());
-
-    match format {
-        LogFormat::Json => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer().json())
-                .init();
-        }
-        LogFormat::Pretty => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(fmt::layer().pretty())
-                .init();
-        }
-    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    init_logging(args.log_level, args.log_format);
+    // Load configuration first (to get log settings)
+    let config = Config::load(&args.config)?;
+
+    // Initialize tracing with config-based settings
+    let tracing_config = TracingConfig {
+        service_name: "smppd".to_string(),
+        log_level: config.settings.log_level.clone(),
+        json_logs: config.settings.json_logs,
+        otlp_endpoint: config.settings.otlp_endpoint.clone(),
+        sample_rate: config.settings.trace_sample_rate,
+    };
+
+    init_tracing(&tracing_config)?;
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -66,12 +44,10 @@ async fn main() -> Result<()> {
         "starting smppd"
     );
 
-    // Load configuration
-    let config = Config::load(&args.config)?;
-
     info!(
         listeners = config.listeners.len(),
         clusters = config.clusters.len(),
+        routes = config.routes.len(),
         "configuration loaded"
     );
 
@@ -82,7 +58,7 @@ async fn main() -> Result<()> {
     }
 
     // Create and run server
-    let server = Server::new(config)?;
+    let server = Server::new(config, args.config)?;
     server.run().await?;
 
     Ok(())

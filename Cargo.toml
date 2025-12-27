@@ -32,12 +32,21 @@ serde_yaml = "0.9"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Logging
+# Logging & Tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-opentelemetry = "0.28"
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
 
 # Metrics
 prometheus = "0.13"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+
+# Hot reload
+notify = "7"
 
 # Utils
 bytes = "1"
@@ -46,6 +55,8 @@ anyhow = "1"
 async-trait = "0.1"
 futures = "0.3"
 humantime = "2"
+num_cpus = "1"
+tempfile = "3"
 
 [build-dependencies]
 tonic-build = "0.12"

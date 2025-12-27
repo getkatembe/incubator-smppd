@@ -398,10 +398,58 @@ pub struct Settings {
     /// Log level
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    /// OTLP endpoint for distributed tracing
+    pub otlp_endpoint: Option<String>,
+
+    /// Trace sample rate (0.0 - 1.0)
+    #[serde(default = "default_sample_rate")]
+    pub trace_sample_rate: f64,
+
+    /// Shutdown configuration
+    #[serde(default)]
+    pub shutdown: ShutdownConfig,
+
+    /// Enable hot reload
+    #[serde(default = "default_true")]
+    pub hot_reload: bool,
 }
 
 fn default_log_level() -> String {
     "info".to_string()
+}
+
+fn default_sample_rate() -> f64 {
+    1.0
+}
+
+/// Shutdown configuration (Envoy-style)
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShutdownConfig {
+    /// Drain timeout - how long to wait for connections to drain
+    #[serde(default = "default_drain_timeout", with = "humantime_serde")]
+    pub drain_timeout: Duration,
+
+    /// Parent shutdown timeout - max time for entire shutdown
+    #[serde(default = "default_parent_shutdown_timeout", with = "humantime_serde")]
+    pub parent_shutdown_timeout: Duration,
+}
+
+impl Default for ShutdownConfig {
+    fn default() -> Self {
+        Self {
+            drain_timeout: default_drain_timeout(),
+            parent_shutdown_timeout: default_parent_shutdown_timeout(),
+        }
+    }
+}
+
+fn default_drain_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_parent_shutdown_timeout() -> Duration {
+    Duration::from_secs(60)
 }
 
 /// Humantime serde support module

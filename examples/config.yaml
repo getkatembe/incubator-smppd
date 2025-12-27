@@ -97,3 +97,9 @@ settings:
   workers: 0  # 0 = auto-detect
   json_logs: false
   log_level: info
+  hot_reload: true
+  # otlp_endpoint: "http://localhost:4317"  # Uncomment for OTEL
+  trace_sample_rate: 1.0
+  shutdown:
+    drain_timeout: 30s
+    parent_shutdown_timeout: 60s
