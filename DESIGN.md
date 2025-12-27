@@ -273,7 +273,81 @@ listeners:
 
 ## Upstreams
 
-SMSC connection pools:
+Each upstream is independent with its own credentials, TLS, and settings:
+
+```yaml
+upstreams:
+  # Carrier A - direct connection, TLS, mTLS client cert
+  - name: carrier-a
+    hosts:
+      - address: smsc1.carrier-a.com:8775
+        weight: 100
+      - address: smsc2.carrier-a.com:8775
+        weight: 100
+
+    bind:
+      system_id: ${CARRIER_A_USER}
+      password: ${CARRIER_A_PASS}
+      system_type: "OTP"
+      type: transceiver
+
+    tls:
+      enabled: true
+      cert: /etc/smppd/certs/carrier-a-client.crt   # mTLS client cert
+      key: /etc/smppd/certs/carrier-a-client.key
+      ca: /etc/smppd/certs/carrier-a-ca.crt
+
+    pool:
+      min_connections: 10
+      max_connections: 100
+
+  # Carrier B - plain SMPP, different credentials
+  - name: carrier-b
+    hosts:
+      - address: smsc.carrier-b.com:2775
+
+    bind:
+      system_id: ${CARRIER_B_USER}
+      password: ${CARRIER_B_PASS}
+      system_type: ""
+      type: transmitter
+
+    # No TLS
+    tls:
+      enabled: false
+
+    pool:
+      min_connections: 5
+      max_connections: 20
+
+  # Aggregator - TLS but no client cert
+  - name: aggregator
+    hosts:
+      - address: smsc.aggregator.com:8775
+
+    bind:
+      system_id: ${AGG_USER}
+      password: ${AGG_PASS}
+      type: transceiver
+
+    tls:
+      enabled: true
+      skip_verify: false
+      # No client cert - server TLS only
+
+  # Backup - different region, different creds
+  - name: backup
+    hosts:
+      - address: backup-eu.smsc.com:2775
+      - address: backup-us.smsc.com:2775
+
+    bind:
+      system_id: ${BACKUP_USER}
+      password: ${BACKUP_PASS}
+      type: transceiver
+```
+
+### Upstream Configuration
 
 ```yaml
 upstreams:
@@ -291,12 +365,13 @@ upstreams:
         weight: 50
         priority: 2  # Lower priority = backup
 
-    # Bind credentials
+    # Bind credentials (unique per upstream)
     bind:
       system_id: ${CARRIER_A_USER}
       password: ${CARRIER_A_PASS}
       system_type: ""
       type: transceiver  # transmitter, receiver, transceiver
+      version: 3.4       # SMPP version for this upstream
 
     # Connection pool
     pool:
@@ -310,11 +385,14 @@ upstreams:
       timeout: 10s
       threshold: 3  # Failures before unhealthy
 
-    # TLS to SMSC
+    # TLS to SMSC (unique per upstream)
     tls:
       enabled: true
       skip_verify: false
       ca: /etc/smppd/certs/carrier-a-ca.crt
+      cert: /etc/smppd/certs/carrier-a-client.crt  # mTLS
+      key: /etc/smppd/certs/carrier-a-client.key
+      server_name: smsc.carrier-a.com              # SNI
 
     # Load balancing within pool
     load_balancing:
@@ -325,7 +403,12 @@ upstreams:
       max_attempts: 3
       delay: 1s
       backoff: exponential
-```
+
+    # Timeouts
+    timeouts:
+      connect: 10s
+      response: 30s
+      enquire_link: 60s
 
 ---
 
