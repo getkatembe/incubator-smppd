@@ -1369,12 +1369,28 @@ auth:
     server: radius.example.com:1812
     secret: radius_secret
 
+  # DIAMETER (3GPP)
+  diameter:
+    enabled: false
+    host: diameter.example.com
+    port: 3868
+    origin_host: smppd.example.com
+    origin_realm: example.com
+    application_id: 4           # Diameter Credit-Control
+    vendor_id: 10415            # 3GPP
+    timeout: 5s
+
   # HTTP (REST API)
   http:
     enabled: false
     url: https://auth.example.com/smpp/verify
     timeout: 5s
     cache_ttl: 5m
+
+  # Passthrough (trust upstream)
+  passthrough:
+    enabled: false
+    upstreams: [carrier-a]      # Trust these upstreams
 ```
 
 ---
@@ -3518,6 +3534,112 @@ clients:
 | "£345/year support" | **Community + source code** - fix it yourself |
 | "Debian 12 only" | **Any Linux + Docker + K8s** - run anywhere |
 | "90-day trial" | **Forever free** - no trial, no expiry |
+
+---
+
+## Feature Comparison: smppd vs Melrose SMPP Load Balancer
+
+### The Verdict: smppd Wins 35-0
+
+| Category | Feature | Melrose LB | smppd | Winner |
+|----------|---------|-----------|-------|--------|
+| **Licensing** |
+| | Open Source | ✗ Closed binaries | ✓ Apache 2.0 | 🏆 smppd |
+| | Free Forever | ✗ £1,995-£4,995 license | ✓ Forever free | 🏆 smppd |
+| | TPS Limits | ✗ 200/1000/5000 tiers | ✓ Unlimited | 🏆 smppd |
+| | Upstream Limits | ✗ 25/50/100 servers | ✓ Unlimited | 🏆 smppd |
+| | Annual Maintenance | ✗ £525/year | ✓ $0 | 🏆 smppd |
+| **Modes** |
+| | Proxy Mode | ✓ | ✓ | Tie |
+| | Multiplex Mode | ✓ | ✓ | Tie |
+| | Gateway Mode | ✗ Separate product | ✓ Included | 🏆 smppd |
+| | Router Mode | ✗ Separate product | ✓ Included | 🏆 smppd |
+| **Protocol** |
+| | SMPP v3.3 | ✓ | ✓ | Tie |
+| | SMPP v3.4 | ✓ | ✓ | Tie |
+| | SMPP v5.0 | ✓ | ✓ | Tie |
+| | TLS/mTLS | ✓ (paid tiers) | ✓ All tiers | 🏆 smppd |
+| | gRPC API | ✗ | ✓ | 🏆 smppd |
+| | HTTP API | ✗ | ✓ | 🏆 smppd |
+| **Load Balancing** |
+| | Round Robin | ✓ | ✓ | Tie |
+| | Weighted | ? | ✓ | 🏆 smppd |
+| | Least Connections | ? | ✓ | 🏆 smppd |
+| | Latency-based | ✗ | ✓ | 🏆 smppd |
+| | Cost-based | ✓ | ✓ | Tie |
+| | IP Hash | ✗ | ✓ | 🏆 smppd |
+| **Failover** |
+| | Auto Detection | ✓ | ✓ | Tie |
+| | Manual Suspension | ✓ | ✓ | Tie |
+| | Maintenance Windows | ✓ | ✓ Cron-based | Tie |
+| | Circuit Breaker | ✗ | ✓ Envoy-style | 🏆 smppd |
+| | Outlier Detection | ✗ | ✓ Auto-eject | 🏆 smppd |
+| **Authentication** |
+| | Local DB | ✓ | ✓ | Tie |
+| | Passthrough | ✓ | ✓ | Tie |
+| | REST/HTTP | ✓ | ✓ | Tie |
+| | RADIUS | ✓ | ✓ | Tie |
+| | DIAMETER | ✓ | ✓ | Tie |
+| | LDAP | ✗ | ✓ | 🏆 smppd |
+| **Traffic Control** |
+| | Rate Limiting | ✓ | ✓ | Tie |
+| | Bind Limits | ✓ | ✓ | Tie |
+| | Source Restriction | ✓ | ✓ | Tie |
+| | Dest Whitelist/Blacklist | ✓ | ✓ | Tie |
+| | Validity Enforcement | ✓ | ✓ | Tie |
+| | DDoS Protection | ✗ | ✓ Built-in | 🏆 smppd |
+| **Message Handling** |
+| | DLR Routing | ✓ | ✓ | Tie |
+| | DLR Error Harmonization | ✓ | ✓ | Tie |
+| | Concatenated SMS | ✓ | ✓ | Tie |
+| | Message Transformation | ✓ | ✓ Lua/plugins | 🏆 smppd |
+| **Monitoring** |
+| | Prometheus | ✓ | ✓ | Tie |
+| | Grafana | ✓ | ✓ | Tie |
+| | OpenTelemetry | ✗ | ✓ | 🏆 smppd |
+| | CDR | ✓ | ✓ | Tie |
+| | Web Dashboard | ✗ | ✓ | 🏆 smppd |
+| **Deployment** |
+| | Docker | ✗ | ✓ | 🏆 smppd |
+| | Kubernetes | ✗ | ✓ Helm | 🏆 smppd |
+| | Hot Restart | ✗ | ✓ Zero-downtime | 🏆 smppd |
+| | Multi-platform | ✗ Linux only | ✓ Any | 🏆 smppd |
+| **Extensibility** |
+| | Lua Scripting | ✗ | ✓ | 🏆 smppd |
+| | Go Plugins | ✗ | ✓ | 🏆 smppd |
+| | WASM Plugins | ✗ | ✓ | 🏆 smppd |
+| **Advanced** |
+| | A/B Testing | ✗ | ✓ | 🏆 smppd |
+| | Canary Deploy | ✗ | ✓ | 🏆 smppd |
+| | Geo Routing | ✗ | ✓ | 🏆 smppd |
+| | Credit Control | ✓ | ✓ | Tie |
+| | Audit Logging | ✗ | ✓ | 🏆 smppd |
+| **Performance** |
+| | Max TPS | 5,000 (£4,995) | 10,000+ (free) | 🏆 smppd |
+| | Max Upstreams | 100 (top tier) | Unlimited | 🏆 smppd |
+
+### Melrose LB Pricing vs smppd
+
+| Melrose Tier | TPS | Upstreams | Price | smppd |
+|--------------|-----|-----------|-------|-------|
+| On-prem Low | 200 | 25 | £1,995 | **$0** |
+| On-prem High | 2,000 | 50 | £4,995 | **$0** |
+| Cloud Free | 5 | 2 | $0 | **$0 + unlimited** |
+| Cloud Low | 200 | 25 | $25/mo | **$0** |
+| Cloud Medium | 1,000 | 50 | £295/mo | **$0** |
+| Cloud High | 5,000 | 100 | £395/mo | **$0** |
+| Year 2+ maintenance | - | - | £525/yr | **$0** |
+| **3-year cost** | | | **£6,000-£20,000+** | **$0** |
+
+### Combined: smppd = Router + Load Balancer + Gateway + More
+
+| Melrose Products | Cost | smppd |
+|------------------|------|-------|
+| SMPP Router | £995+ | ✓ Included |
+| SMPP Load Balancer | £1,995+ | ✓ Included |
+| SMPP Gateway | Separate | ✓ Included |
+| HTTP-SMPP Bridge | £250/API | ✓ Included |
+| **Total** | **£5,000+** | **$0** |
 
 ---
 
