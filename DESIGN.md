@@ -176,56 +176,152 @@ clients:
 
 ## Listeners
 
-### SMPP Listener
+Each listener is independent with its own TLS, timeouts, limits, and settings.
 
-Accept SMPP connections from ESMEs:
+### Multiple Listeners Example
 
 ```yaml
 listeners:
-  - name: smpp-plain
+  # Plain SMPP - internal network
+  - name: smpp-internal
+    type: smpp
+    address: 10.0.0.1:2775
+    max_connections: 1000
+
+  # TLS SMPP - external clients, strict mTLS
+  - name: smpp-external
+    type: smpp
+    address: 0.0.0.0:8775
+    tls:
+      cert: /etc/smppd/certs/external.crt
+      key: /etc/smppd/certs/external.key
+      ca: /etc/smppd/certs/client-ca.crt
+      client_auth: require
+    max_connections: 5000
+
+  # HTTP API - internal
+  - name: http-internal
+    type: http
+    address: 10.0.0.1:8080
+    timeouts:
+      read: 30s
+      write: 30s
+
+  # HTTPS API - external with different cert
+  - name: https-external
+    type: http
+    address: 0.0.0.0:8443
+    tls:
+      cert: /etc/smppd/certs/api.crt
+      key: /etc/smppd/certs/api.key
+    timeouts:
+      read: 60s
+      write: 60s
+
+  # gRPC - internal only
+  - name: grpc
+    type: grpc
+    address: 127.0.0.1:9090
+```
+
+### Listener Configuration (Full Reference)
+
+```yaml
+listeners:
+  - name: smpp-main
     type: smpp
     address: :2775
 
-    # Protocol settings
-    smpp:
-      versions: [3.3, 3.4, 5.0]
-      auto_negotiate: true
-      enquire_link_interval: 30s
-      response_timeout: 30s
+    # TLS/mTLS
+    tls:
+      enabled: true
+      cert: /etc/smppd/certs/server.crt
+      key: /etc/smppd/certs/server.key
+      ca: /etc/smppd/certs/ca.crt
+      client_auth: require       # none, request, require
+      min_version: "1.2"
+      max_version: "1.3"
+      cipher_suites:
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
 
     # Connection limits
     max_connections: 10000
     max_connections_per_ip: 100
+    max_connections_per_client: 50
 
-  - name: smpp-tls
-    type: smpp
-    address: :8775
-    tls:
-      cert: /etc/smppd/certs/server.crt
-      key: /etc/smppd/certs/server.key
-      ca: /etc/smppd/certs/ca.crt
-      client_auth: require  # none, request, require
-      min_version: "1.2"
-```
+    # Timeouts
+    timeouts:
+      read: 60s
+      write: 30s
+      idle: 5m
+      bind: 30s
+      response: 30s
 
-### HTTP Listener
+    # SMPP protocol settings
+    smpp:
+      versions: [3.3, 3.4, 5.0]
+      auto_negotiate: true
+      enquire_link_interval: 30s
+      enquire_link_timeout: 10s
+      window_size: 100
 
-REST API for message submission:
+    # Rate limiting (per listener)
+    rate_limit:
+      connections_per_second: 100
+      binds_per_second: 50
 
-```yaml
-listeners:
+    # IP filtering
+    allowed_ips:
+      - 192.168.0.0/16
+      - 10.0.0.0/8
+    blocked_ips:
+      - 10.0.0.99
+
   - name: http-api
     type: http
     address: :8080
 
+    # TLS
+    tls:
+      enabled: true
+      cert: /etc/smppd/certs/api.crt
+      key: /etc/smppd/certs/api.key
+
+    # HTTP settings
     http:
       read_timeout: 30s
       write_timeout: 30s
+      idle_timeout: 120s
+      max_header_bytes: 1048576
+      max_body_bytes: 10485760
 
-    # Optional TLS
+    # Rate limiting
+    rate_limit:
+      requests_per_second: 1000
+      burst: 2000
+
+    # CORS
+    cors:
+      enabled: true
+      allowed_origins: ["https://app.example.com"]
+      allowed_methods: ["GET", "POST"]
+      allowed_headers: ["Authorization", "Content-Type"]
+
+  - name: grpc
+    type: grpc
+    address: :9090
+
     tls:
-      cert: /etc/smppd/certs/server.crt
-      key: /etc/smppd/certs/server.key
+      cert: /etc/smppd/certs/grpc.crt
+      key: /etc/smppd/certs/grpc.key
+
+    grpc:
+      max_recv_msg_size: 4194304
+      max_send_msg_size: 4194304
+      keepalive:
+        time: 30s
+        timeout: 10s
 ```
 
 #### HTTP API Endpoints
@@ -347,13 +443,15 @@ upstreams:
       type: transceiver
 ```
 
-### Upstream Configuration
+### Upstream Configuration (Full Reference)
+
+Each upstream has its own independent configuration:
 
 ```yaml
 upstreams:
   - name: carrier-a
 
-    # Multiple hosts for load balancing
+    # Hosts - multiple for load balancing/failover
     hosts:
       - address: smsc1.carrier-a.com:2775
         weight: 100
@@ -365,50 +463,117 @@ upstreams:
         weight: 50
         priority: 2  # Lower priority = backup
 
-    # Bind credentials (unique per upstream)
+    # Bind credentials
     bind:
       system_id: ${CARRIER_A_USER}
       password: ${CARRIER_A_PASS}
-      system_type: ""
-      type: transceiver  # transmitter, receiver, transceiver
-      version: 3.4       # SMPP version for this upstream
+      system_type: "OTP"
+      type: transceiver          # transmitter, receiver, transceiver
+      version: 3.4               # SMPP version
+      interface_version: 0x34
+      addr_ton: 0
+      addr_npi: 0
+      address_range: ""
+
+    # TLS/mTLS
+    tls:
+      enabled: true
+      cert: /etc/smppd/certs/carrier-a-client.crt
+      key: /etc/smppd/certs/carrier-a-client.key
+      ca: /etc/smppd/certs/carrier-a-ca.crt
+      skip_verify: false
+      server_name: smsc.carrier-a.com    # SNI
+      min_version: "1.2"
+      max_version: "1.3"
+      cipher_suites:
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
 
     # Connection pool
     pool:
       min_connections: 5
       max_connections: 50
       idle_timeout: 5m
-
-    # Health checks
-    health:
-      interval: 30s
-      timeout: 10s
-      threshold: 3  # Failures before unhealthy
-
-    # TLS to SMSC (unique per upstream)
-    tls:
-      enabled: true
-      skip_verify: false
-      ca: /etc/smppd/certs/carrier-a-ca.crt
-      cert: /etc/smppd/certs/carrier-a-client.crt  # mTLS
-      key: /etc/smppd/certs/carrier-a-client.key
-      server_name: smsc.carrier-a.com              # SNI
-
-    # Load balancing within pool
-    load_balancing:
-      algorithm: weighted_round_robin  # round_robin, least_connections, weighted_round_robin
-
-    # Retry on failure
-    retry:
-      max_attempts: 3
-      delay: 1s
-      backoff: exponential
+      max_lifetime: 1h
 
     # Timeouts
     timeouts:
       connect: 10s
+      bind: 30s
+      submit: 30s
       response: 30s
       enquire_link: 60s
+      read: 60s
+      write: 30s
+
+    # Health checks
+    health:
+      enabled: true
+      type: enquire_link       # tcp, enquire_link, submit
+      interval: 30s
+      timeout: 10s
+      threshold: 3             # Failures before unhealthy
+      recovery_threshold: 2    # Successes before healthy
+
+    # Load balancing
+    load_balancing:
+      algorithm: weighted_round_robin
+      # round_robin, least_connections, weighted_round_robin,
+      # random, ip_hash, latency
+
+    # Retry
+    retry:
+      enabled: true
+      max_attempts: 3
+      delay: 1s
+      max_delay: 30s
+      backoff: exponential     # fixed, exponential, linear
+      backoff_factor: 2
+      retryable_errors:
+        - 0x00000008           # System error
+        - 0x00000058           # Throttled
+
+    # Rate limiting (to protect upstream)
+    rate_limit:
+      messages_per_second: 500
+      burst: 1000
+
+    # Window (max in-flight)
+    window:
+      size: 100
+      timeout: 60s
+
+    # Enquire link
+    enquire_link:
+      interval: 30s
+      timeout: 10s
+
+    # Protocol options
+    protocol:
+      version: 3.4
+      auto_respond_enquire: true
+      auto_respond_unbind: true
+
+    # Message options
+    message:
+      max_length: 160
+      default_encoding: gsm7
+      default_registered_delivery: 0
+      default_service_type: ""
+      default_source_addr_ton: 5
+      default_source_addr_npi: 0
+
+    # Failover
+    failover:
+      enabled: true
+      threshold: 3             # Consecutive failures
+      recovery_time: 60s
+      fallback: backup         # Upstream to failover to
+
+    # Tags/metadata
+    tags:
+      region: eu
+      tier: premium
+      cost_per_sms: 0.01
 
 ---
 
