@@ -308,13 +308,15 @@ upstreams:
     bind:
       system_id: ${CARRIER_B_USER}
       password: ${CARRIER_B_PASS}
+      type: transceiver
 
   - name: backup
     hosts:
       - address: backup.smsc.com:2775
     bind:
-      system_id: backup
+      system_id: ${BACKUP_USER}
       password: ${BACKUP_PASS}
+      type: transceiver
 
 # Routes - how to route messages
 routes:
