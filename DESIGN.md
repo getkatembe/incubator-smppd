@@ -1512,42 +1512,192 @@ sequenceDiagram
 
 ```protobuf
 service ConfigService {
-  // Subscribe to config updates
-  rpc Subscribe(SubscribeRequest) returns (stream ConfigUpdate);
-
-  // Acknowledge config applied
-  rpc Ack(AckRequest) returns (AckResponse);
+  // Bidirectional stream for config sync
+  rpc Stream(stream ConfigRequest) returns (stream ConfigResponse);
 }
 
-message SubscribeRequest {
-  string node_id = 1;
-  repeated string resources = 2;  // listeners, upstreams, routes, clients
-  string last_version = 3;        // Resume from version
+// --------------------------------------------------------------------------
+// Request (client -> server)
+// --------------------------------------------------------------------------
+
+message ConfigRequest {
+  // Node identification
+  Node node = 1;
+
+  // Resource type being requested
+  string resource_type = 2;  // listener, upstream, route, client
+
+  // Subscribed resource names (empty = all)
+  repeated string resource_names = 3;
+
+  // Last received version (for resumption)
+  string version_info = 4;
+
+  // Response acknowledgement
+  oneof ack {
+    string ack_version = 5;    // Successfully applied
+    NackDetails nack = 6;      // Rejected with error
+  }
+
+  // Delta mode
+  bool delta = 7;
 }
 
-message ConfigUpdate {
+message Node {
+  string id = 1;
+  string cluster = 2;
+  map<string, string> metadata = 3;
+  Locality locality = 4;
+}
+
+message Locality {
+  string region = 1;
+  string zone = 2;
+}
+
+message NackDetails {
   string version = 1;
-
-  repeated Listener listeners = 2;
-  repeated Upstream upstreams = 3;
-  repeated Route routes = 4;
-  repeated Client clients = 5;
-
-  bool full_snapshot = 6;         // Full or incremental
+  string message = 2;
+  repeated ResourceError errors = 3;
 }
 
-message AckRequest {
-  string node_id = 1;
+message ResourceError {
+  string name = 1;
+  string error = 2;
+}
+
+// --------------------------------------------------------------------------
+// Response (server -> client)
+// --------------------------------------------------------------------------
+
+message ConfigResponse {
+  // Resource type
+  string resource_type = 1;
+
+  // Version of this response
+  string version_info = 2;
+
+  // Full state (sotw mode)
+  repeated Resource resources = 3;
+
+  // Delta updates
+  repeated Resource added = 4;
+  repeated string removed = 5;
+
+  // Control plane identifier
+  string control_plane = 6;
+}
+
+message Resource {
+  // Resource name (unique within type)
+  string name = 1;
+
+  // Resource version (for per-resource tracking)
   string version = 2;
-  bool success = 3;
-  string error = 4;
+
+  // Resource data
+  oneof resource {
+    Listener listener = 3;
+    Upstream upstream = 4;
+    Route route = 5;
+    Client client = 6;
+  }
+
+  // Time-to-live (0 = no expiry)
+  google.protobuf.Duration ttl = 7;
+
+  // Cache control
+  CacheControl cache = 8;
+}
+
+message CacheControl {
+  bool do_not_cache = 1;
+}
+
+// --------------------------------------------------------------------------
+// Resource Types
+// --------------------------------------------------------------------------
+
+message Listener {
+  string name = 1;
+  string type = 2;              // smpp, http, grpc
+  string address = 3;
+  TlsConfig tls = 4;
+  map<string, string> options = 5;
+}
+
+message Upstream {
+  string name = 1;
+  repeated Host hosts = 2;
+  BindConfig bind = 3;
+  TlsConfig tls = 4;
+  PoolConfig pool = 5;
+  HealthCheckConfig health = 6;
+  CircuitBreakerConfig circuit_breaker = 7;
+  OutlierDetectionConfig outlier_detection = 8;
+}
+
+message Host {
+  string address = 1;
+  uint32 weight = 2;
+  uint32 priority = 3;
+  BindConfig bind = 4;          // Per-host override
+  HealthState health = 5;
+}
+
+message Route {
+  string name = 1;
+  uint32 priority = 2;
+  RouteMatch match = 3;
+  string upstream = 4;
+  string failover = 5;
+}
+
+message Client {
+  string system_id = 1;
+  string password_hash = 2;
+  repeated string allowed_ips = 3;
+  RateLimitConfig rate_limit = 4;
 }
 ```
 
-- gRPC streaming for real-time updates
-- Version tracking with Ack/Nack
-- Incremental or full snapshot
-- Graceful drain on upstream changes
+**Features:**
+
+| Feature | Description |
+|---------|-------------|
+| **Bidirectional stream** | Single stream for requests and responses |
+| **Resource types** | listener, upstream, route, client |
+| **Sotw + Delta** | Full state or incremental updates |
+| **Per-resource versioning** | Track each resource independently |
+| **Resource names** | Subscribe to specific resources |
+| **Ack/Nack** | Confirm or reject with error details |
+| **TTL** | Resources can expire |
+| **Locality** | Region/zone aware placement |
+| **Warming** | New resources validated before use |
+| **Dependency order** | Upstreams before routes |
+
+```mermaid
+sequenceDiagram
+    participant smppd
+    participant ControlPlane
+
+    smppd->>ControlPlane: ConfigRequest(type=upstream)
+    ControlPlane-->>smppd: ConfigResponse(upstreams, v1)
+    smppd->>ControlPlane: ConfigRequest(ack=v1, type=route)
+    ControlPlane-->>smppd: ConfigResponse(routes, v1)
+    smppd->>ControlPlane: ConfigRequest(ack=v1)
+
+    Note over smppd: Config applied
+
+    ControlPlane-->>smppd: ConfigResponse(delta, added=[upstream-x])
+    smppd->>smppd: Warm upstream-x
+    smppd->>ControlPlane: ConfigRequest(ack=v2)
+```
+
+- Upstreams loaded before routes (dependency)
+- New upstreams warmed before traffic
+- Delta updates for efficiency
+- Graceful drain on removals
 
 ### Clustering
 
