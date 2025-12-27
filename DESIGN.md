@@ -1914,6 +1914,640 @@ routes:
 
 ---
 
+## CDR Export
+
+Call Detail Records for billing and analytics:
+
+```yaml
+cdr:
+  enabled: true
+
+  # Output formats
+  format: json                    # json, csv, asn1, protobuf
+
+  # Output destinations
+  outputs:
+    # Local files
+    - type: file
+      path: /var/log/smppd/cdr/
+      rotation:
+        size: 100MB
+        time: 1h
+        keep: 168                 # Keep 7 days
+
+    # S3/MinIO
+    - type: s3
+      bucket: smppd-cdr
+      prefix: "cdr/{{date}}/"
+      region: eu-west-1
+
+    # Kafka
+    - type: kafka
+      brokers: ["kafka:9092"]
+      topic: smppd.cdr
+
+    # HTTP webhook
+    - type: http
+      url: https://billing.example.com/cdr
+      batch_size: 100
+      flush_interval: 10s
+
+  # What to include
+  fields:
+    - timestamp
+    - message_id
+    - source_addr
+    - dest_addr
+    - client_id
+    - upstream
+    - route
+    - status
+    - latency_ms
+    - parts
+    - cost
+    - tenant
+
+  # Filtering
+  filter:
+    include_failed: true
+    include_dlr: true
+    min_status: 0                 # Include all statuses
+```
+
+### CDR Format
+
+```json
+{
+  "timestamp": "2024-01-15T14:23:01.234Z",
+  "message_id": "abc123",
+  "source_addr": "MYAPP",
+  "dest_addr": "+258841234567",
+  "client_id": "client-a",
+  "tenant": "tenant-a",
+  "upstream": "vodacom-mz",
+  "route": "mozambique",
+  "status": "ESME_ROK",
+  "latency_ms": 45,
+  "parts": 1,
+  "cost": 0.02,
+  "currency": "USD",
+  "dlr_status": "DELIVRD",
+  "dlr_timestamp": "2024-01-15T14:23:06.789Z"
+}
+```
+
+---
+
+## Webhooks
+
+Event notifications to external systems:
+
+```yaml
+webhooks:
+  endpoints:
+    - name: billing
+      url: https://billing.example.com/events
+      events: [message.sent, message.delivered, message.failed]
+      headers:
+        Authorization: "Bearer {{secret}}"
+
+    - name: monitoring
+      url: https://monitoring.example.com/smppd
+      events: [upstream.down, upstream.up, client.connected, client.disconnected]
+
+    - name: security
+      url: https://siem.example.com/events
+      events: [auth.failed, rate_limit.exceeded, firewall.blocked]
+
+  # Delivery settings
+  delivery:
+    timeout: 10s
+    retries: 3
+    backoff: exponential          # linear, exponential
+    max_backoff: 5m
+
+  # Batching
+  batch:
+    enabled: true
+    size: 100
+    interval: 5s
+
+  # Signing
+  signing:
+    enabled: true
+    algorithm: hmac-sha256
+    header: X-Signature
+```
+
+### Event Types
+
+```yaml
+events:
+  # Message events
+  message.submitted:              # Client submitted message
+  message.sent:                   # Sent to upstream
+  message.delivered:              # DLR received - delivered
+  message.failed:                 # DLR received - failed
+  message.expired:                # DLR received - expired
+
+  # Client events
+  client.connected:               # ESME bound
+  client.disconnected:            # ESME unbound
+  auth.failed:                    # Authentication failed
+  auth.succeeded:                 # Authentication succeeded
+
+  # Upstream events
+  upstream.up:                    # Upstream became available
+  upstream.down:                  # Upstream became unavailable
+  upstream.throttled:             # Upstream throttling
+
+  # System events
+  rate_limit.exceeded:            # Client rate limited
+  credit.low:                     # Low credit balance
+  credit.exhausted:               # Credit exhausted
+  firewall.blocked:               # Message blocked by firewall
+  campaign.started:               # Campaign started
+  campaign.completed:             # Campaign completed
+```
+
+### Webhook Payload
+
+```json
+{
+  "event": "message.delivered",
+  "timestamp": "2024-01-15T14:23:06.789Z",
+  "data": {
+    "message_id": "abc123",
+    "dest_addr": "+258841234567",
+    "dlr_status": "DELIVRD",
+    "latency_ms": 5555
+  },
+  "metadata": {
+    "client": "client-a",
+    "tenant": "tenant-a",
+    "upstream": "vodacom-mz"
+  }
+}
+```
+
+---
+
+## Message Archival
+
+Long-term storage for compliance and analytics:
+
+```yaml
+archival:
+  enabled: true
+
+  # What to archive
+  content:
+    messages: true                # Full message content
+    metadata: true                # Routing, timing, status
+    dlrs: true                    # Delivery receipts
+
+  # Storage backend
+  storage:
+    type: s3                      # s3, gcs, azure, local
+    bucket: smppd-archive
+    prefix: "messages/{{year}}/{{month}}/"
+    region: eu-west-1
+
+    # Encryption
+    encryption:
+      enabled: true
+      type: sse-s3                # sse-s3, sse-kms, client-side
+
+  # Retention
+  retention:
+    duration: 7y                  # Keep for 7 years
+    delete_after: true            # Auto-delete after retention
+
+  # Compression
+  compression:
+    enabled: true
+    algorithm: zstd
+
+  # Indexing (for search)
+  index:
+    enabled: true
+    backend: elasticsearch
+    elasticsearch:
+      url: https://es.example.com:9200
+      index: smppd-messages
+```
+
+### Archive Search API
+
+```
+GET /api/archive/search?dest=+258*&from=2024-01-01&to=2024-01-31
+GET /api/archive/{message_id}
+GET /api/archive/export?client=X&format=csv
+```
+
+---
+
+## Sender ID Management
+
+Registration and validation of sender IDs:
+
+```yaml
+sender_ids:
+  # Validation
+  validation:
+    enabled: true
+    mode: strict                  # strict, warn, off
+
+  # Registered sender IDs per client
+  registry:
+    - client: client-a
+      sender_ids:
+        - id: "MYAPP"
+          type: alphanumeric
+          status: approved
+          countries: [MZ, ZA]
+        - id: "12345"
+          type: shortcode
+          status: approved
+          countries: [MZ]
+
+    - client: client-b
+      sender_ids:
+        - id: "COMPANY"
+          type: alphanumeric
+          status: pending         # Not yet approved
+          countries: [MZ]
+
+  # Default behavior
+  unregistered:
+    action: reject                # reject, replace, warn
+    replacement: "INFO"           # Use this if replacing
+
+  # Auto-registration
+  auto_register:
+    enabled: false
+    default_status: pending
+```
+
+### Sender ID API
+
+```
+POST /api/sender-ids                        # Register new sender ID
+GET  /api/sender-ids                        # List all
+GET  /api/sender-ids/{id}                   # Get details
+PUT  /api/sender-ids/{id}                   # Update
+DELETE /api/sender-ids/{id}                 # Delete
+POST /api/sender-ids/{id}/approve           # Approve (admin)
+POST /api/sender-ids/{id}/reject            # Reject (admin)
+```
+
+---
+
+## Opt-out / Consent Management
+
+Handle STOP requests and suppression lists:
+
+```yaml
+optout:
+  enabled: true
+
+  # Keywords that trigger opt-out
+  keywords:
+    - "STOP"
+    - "UNSUBSCRIBE"
+    - "CANCEL"
+    - "QUIT"
+    - "END"
+
+  # Suppression list storage
+  storage:
+    type: redis                   # redis, postgres, sqlite
+    redis:
+      address: redis:6379
+      prefix: smppd:optout:
+
+  # Scope
+  scope: sender_id                # global, sender_id, client
+
+  # Response to opt-out
+  response:
+    enabled: true
+    message: "You have been unsubscribed. Reply START to resubscribe."
+
+  # Opt-in keywords
+  optin:
+    enabled: true
+    keywords: ["START", "SUBSCRIBE", "YES"]
+    response: "You have been resubscribed."
+
+  # Enforcement
+  enforcement:
+    action: block                 # block, warn, log
+    response_status: ESME_ROK     # Still return OK but don't send
+```
+
+### Suppression List API
+
+```
+POST /api/optout                            # Add to suppression
+DELETE /api/optout/{msisdn}                 # Remove from suppression
+GET  /api/optout/{msisdn}                   # Check status
+GET  /api/optout?sender_id=X                # List all for sender
+POST /api/optout/import                     # Bulk import
+GET  /api/optout/export                     # Bulk export
+```
+
+### Consent Tracking
+
+```yaml
+consent:
+  enabled: true
+
+  # Track consent source
+  sources:
+    - web_form
+    - sms_optin
+    - api
+    - import
+
+  # Consent record
+  record:
+    msisdn: "+258841234567"
+    sender_id: "MYAPP"
+    source: web_form
+    timestamp: "2024-01-15T10:00:00Z"
+    ip_address: "192.168.1.1"
+    proof: "form_submission_id_123"
+```
+
+---
+
+## DLT Registration (India)
+
+Distributed Ledger Technology compliance for India:
+
+```yaml
+dlt:
+  enabled: true
+  region: IN
+
+  # DLT credentials
+  credentials:
+    entity_id: "1234567890"
+    pe_id: "1234567890123456"
+
+  # Template registration
+  templates:
+    - id: "1234567890123456789012"
+      content: "Your OTP is {#var#}. Valid for 10 minutes."
+      type: transactional
+      sender_id: "MYOTP"
+
+    - id: "1234567890123456789013"
+      content: "Dear {#var#}, your order {#var#} has been shipped."
+      type: transactional
+      sender_id: "MYSHOP"
+
+  # Header (sender ID) registration
+  headers:
+    - header: "MYOTP"
+      type: transactional
+      status: approved
+
+    - header: "MYSHOP"
+      type: promotional
+      status: approved
+
+  # Enforcement
+  enforcement:
+    validate_template: true       # Match message to registered template
+    validate_header: true         # Check sender ID is registered
+    action: reject                # reject, warn
+
+  # Template matching
+  matching:
+    strict: false                 # Allow minor variations
+    variables: "{#var#}"          # Variable placeholder pattern
+```
+
+### DLT API
+
+```
+POST /api/dlt/templates                     # Register template
+GET  /api/dlt/templates                     # List templates
+POST /api/dlt/templates/validate            # Validate message against templates
+POST /api/dlt/headers                       # Register header
+GET  /api/dlt/headers                       # List headers
+```
+
+---
+
+## Alerting Rules
+
+Configurable alerts to external systems:
+
+```yaml
+alerting:
+  # Channels
+  channels:
+    - name: pagerduty
+      type: pagerduty
+      routing_key: pagerduty_key
+      severity_map:
+        critical: critical
+        warning: warning
+        info: info
+
+    - name: slack
+      type: slack
+      webhook_url: https://hooks.slack.com/services/XXX
+      channel: "#smppd-alerts"
+
+    - name: email
+      type: email
+      smtp:
+        host: smtp.example.com
+        port: 587
+        username: alerts@example.com
+        password: smtp_password
+      recipients:
+        - ops@example.com
+        - oncall@example.com
+
+    - name: telegram
+      type: telegram
+      bot_token: telegram_bot_token
+      chat_id: "-1001234567890"
+
+  # Alert rules
+  rules:
+    - name: upstream_down
+      condition: upstream.status == "down"
+      duration: 1m                # Alert if down for 1 minute
+      severity: critical
+      channels: [pagerduty, slack]
+      message: "Upstream {{upstream.name}} is down"
+
+    - name: high_error_rate
+      condition: error_rate > 0.05
+      duration: 5m
+      severity: warning
+      channels: [slack]
+      message: "Error rate is {{error_rate | percent}} for {{client}}"
+
+    - name: low_credit
+      condition: credits.balance < credits.low_threshold
+      severity: warning
+      channels: [email]
+      message: "Low credit balance for {{client}}: {{credits.balance}}"
+
+    - name: rate_limit_exceeded
+      condition: rate_limit.exceeded == true
+      severity: info
+      channels: [slack]
+      throttle: 5m                # Don't alert more than once per 5m
+
+    - name: dlr_delay
+      condition: dlr.avg_delay > 60s
+      duration: 10m
+      severity: warning
+      channels: [slack]
+      message: "DLR delay is high: {{dlr.avg_delay}}"
+```
+
+### Alert Silencing
+
+```yaml
+silencing:
+  - name: maintenance
+    matchers:
+      upstream: vodacom-mz
+    start: "2024-01-20T00:00:00Z"
+    end: "2024-01-20T06:00:00Z"
+    comment: "Scheduled maintenance"
+
+  - name: known_issue
+    matchers:
+      alert: high_error_rate
+      client: test-client
+    duration: 24h
+    comment: "Known issue, being fixed"
+```
+
+---
+
+## Message Queues
+
+Integration with external message queues:
+
+```yaml
+queues:
+  # Kafka
+  kafka:
+    enabled: true
+    brokers: ["kafka1:9092", "kafka2:9092"]
+
+    # Inbound (receive messages to send)
+    consumer:
+      topic: smppd.submit
+      group_id: smppd
+      auto_offset_reset: earliest
+
+    # Outbound (publish events)
+    producer:
+      topics:
+        submitted: smppd.submitted
+        delivered: smppd.delivered
+        failed: smppd.failed
+        dlr: smppd.dlr
+
+    # Serialization
+    serialization: json           # json, avro, protobuf
+
+  # RabbitMQ
+  rabbitmq:
+    enabled: false
+    url: amqp://user:pass@rabbitmq:5672/
+
+    consumer:
+      queue: smppd.submit
+      prefetch: 100
+
+    producer:
+      exchange: smppd.events
+      routing_key_template: "{{event_type}}"
+
+  # Redis Streams
+  redis:
+    enabled: false
+    address: redis:6379
+
+    consumer:
+      stream: smppd:submit
+      group: smppd
+      consumer: smppd-1
+
+    producer:
+      stream: smppd:events
+
+  # NATS
+  nats:
+    enabled: false
+    url: nats://nats:4222
+
+    consumer:
+      subject: smppd.submit
+      queue: smppd
+
+    producer:
+      subject_template: "smppd.{{event_type}}"
+```
+
+### Queue Message Format
+
+```json
+// Inbound (submit)
+{
+  "dest_addr": "+258841234567",
+  "source_addr": "MYAPP",
+  "short_message": "Hello World",
+  "registered_delivery": 1,
+  "client_id": "client-a",
+  "correlation_id": "req-123"
+}
+
+// Outbound (event)
+{
+  "event": "delivered",
+  "message_id": "abc123",
+  "correlation_id": "req-123",
+  "dest_addr": "+258841234567",
+  "status": "DELIVRD",
+  "timestamp": "2024-01-15T14:23:06.789Z"
+}
+```
+
+### Queue-Based Submission
+
+```yaml
+# Submit via queue instead of SMPP
+routes:
+  - name: async-submit
+    match:
+      source: queue               # Message came from queue
+    upstream: vodacom-mz
+
+  # Or route queue messages differently
+  - name: queue-bulk
+    match:
+      source: queue
+      headers:
+        priority: low
+    upstream: bulk-carrier
+```
+
+---
+
 ## Mock Responses
 
 Routes can respond directly without forwarding to an upstream. This enables testing, simulation, and hybrid deployments using the same configuration language.
