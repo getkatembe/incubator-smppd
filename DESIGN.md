@@ -296,8 +296,8 @@ upstreams:
       - address: smsc2.carrier-a.com:2775
         weight: 100
     bind:
-      system_id: ${CARRIER_A_USER}
-      password: ${CARRIER_A_PASS}
+      system_id: carrier_a_user
+      password: carrier_a_pass
       type: transceiver
     pool:
       min_connections: 5
@@ -308,12 +308,12 @@ upstreams:
       # Or each host can have its own credentials
       - address: smsc1.carrier-b.com:2775
         bind:
-          system_id: ${CARRIER_B_USER_1}
-          password: ${CARRIER_B_PASS_1}
+          system_id: carrier_b_smsc1_user
+          password: carrier_b_smsc1_pass
       - address: smsc2.carrier-b.com:2775
         bind:
-          system_id: ${CARRIER_B_USER_2}
-          password: ${CARRIER_B_PASS_2}
+          system_id: carrier_b_smsc2_user
+          password: carrier_b_smsc2_pass
     bind:
       type: transceiver  # Shared settings, credentials per-host
 
@@ -321,8 +321,8 @@ upstreams:
     hosts:
       - address: backup.smsc.com:2775
     bind:
-      system_id: ${BACKUP_USER}
-      password: ${BACKUP_PASS}
+      system_id: backup_user
+      password: backup_pass
       type: transceiver
 
 # Routes - how to route messages
@@ -346,13 +346,13 @@ routes:
 # Clients - ESME authentication
 clients:
   - system_id: client-a
-    password: ${CLIENT_A_PASS}
+    password: client_a_pass
     allowed_ips: ["192.168.1.0/24"]
     rate_limit:
       messages_per_second: 1000
 
   - system_id: client-b
-    password: ${CLIENT_B_PASS}
+    password: client_b_pass
     rate_limit:
       messages_per_second: 500
 ```
@@ -567,8 +567,8 @@ upstreams:
         weight: 100
 
     bind:
-      system_id: ${CARRIER_A_USER}
-      password: ${CARRIER_A_PASS}
+      system_id: carrier_a_user
+      password: carrier_a_pass
       system_type: "OTP"
       type: transceiver
 
@@ -588,8 +588,8 @@ upstreams:
       - address: smsc.carrier-b.com:2775
 
     bind:
-      system_id: ${CARRIER_B_USER}
-      password: ${CARRIER_B_PASS}
+      system_id: carrier_b_user
+      password: carrier_b_pass
       system_type: ""
       type: transmitter
 
@@ -607,8 +607,8 @@ upstreams:
       - address: smsc.aggregator.com:8775
 
     bind:
-      system_id: ${AGG_USER}
-      password: ${AGG_PASS}
+      system_id: aggregator_user
+      password: aggregator_pass
       type: transceiver
 
     tls:
@@ -623,8 +623,8 @@ upstreams:
       - address: backup-us.smsc.com:2775
 
     bind:
-      system_id: ${BACKUP_USER}
-      password: ${BACKUP_PASS}
+      system_id: backup_user
+      password: backup_pass
       type: transceiver
 ```
 
@@ -649,13 +649,13 @@ upstreams:
         priority: 2  # Lower priority = backup
         # Per-host credentials override upstream-level bind
         bind:
-          system_id: ${CARRIER_A_USER_3}
-          password: ${CARRIER_A_PASS_3}
+          system_id: carrier_a_smsc3_user
+          password: carrier_a_smsc3_pass
 
-    # Bind credentials
+    # Bind credentials (default for all hosts)
     bind:
-      system_id: ${CARRIER_A_USER}
-      password: ${CARRIER_A_PASS}
+      system_id: carrier_a_user
+      password: carrier_a_pass
       system_type: "OTP"
       type: transceiver          # transmitter, receiver, transceiver
       version: 3.4               # SMPP version
@@ -862,7 +862,7 @@ mnp:
 
   xconnect:
     url: https://api.xconnect.io/npq
-    api_key: ${XCONNECT_API_KEY}
+    api_key: xconnect_api_key
 
   cache:
     enabled: true
@@ -926,7 +926,7 @@ ESME authentication and authorization:
 ```yaml
 clients:
   - system_id: client-a
-    password: ${CLIENT_A_PASS}
+    password: client_a_pass
 
     # IP restrictions
     allowed_ips:
@@ -958,7 +958,7 @@ clients:
       billing_id: "12345"
 
   - system_id: client-b
-    password: ${CLIENT_B_PASS}
+    password: client_b_pass
     rate_limit:
       messages_per_second: 100
     tier: standard
@@ -973,14 +973,14 @@ auth:
     enabled: true
     url: ldap://ldap.example.com:389
     bind_dn: cn=admin,dc=example,dc=com
-    bind_password: ${LDAP_PASS}
+    bind_password: ldap_bind_password
     base_dn: ou=smpp,dc=example,dc=com
 
   # RADIUS
   radius:
     enabled: false
     server: radius.example.com:1812
-    secret: ${RADIUS_SECRET}
+    secret: radius_secret
 
   # HTTP (REST API)
   http:
@@ -1296,7 +1296,7 @@ graph TB
 ```yaml
 cluster:
   enabled: true
-  node_id: ${HOSTNAME}
+  node_id: node-1
 
   discovery:
     method: kubernetes  # kubernetes, consul, static
@@ -1346,7 +1346,7 @@ management:
   auth:
     type: basic
     username: admin
-    password: ${ADMIN_PASS}
+    password: admin_password
 ```
 
 Endpoints:
@@ -1457,8 +1457,7 @@ services:
       - ./smppd.yaml:/etc/smppd/smppd.yaml
       - ./certs:/etc/smppd/certs
     environment:
-      - CARRIER_A_USER=${CARRIER_A_USER}
-      - CARRIER_A_PASS=${CARRIER_A_PASS}
+      - LOG_LEVEL=info
 ```
 
 ### Kubernetes
@@ -1685,22 +1684,22 @@ upstreams:
     hosts:
       - address: smsc.carrier-a.com:2775
     bind:
-      system_id: ${CARRIER_A_USER}
-      password: ${CARRIER_A_PASS}
+      system_id: carrier_a_user
+      password: carrier_a_pass
 
   - name: carrier-b
     hosts:
       - address: smsc.carrier-b.com:2775
     bind:
-      system_id: ${CARRIER_B_USER}
-      password: ${CARRIER_B_PASS}
+      system_id: carrier_b_user
+      password: carrier_b_pass
 
   - name: backup
     hosts:
       - address: backup.smsc.com:2775
     bind:
-      system_id: backup
-      password: ${BACKUP_PASS}
+      system_id: backup_user
+      password: backup_pass
 
 routes:
   - name: mozambique
@@ -1718,11 +1717,11 @@ routes:
 
 clients:
   - system_id: client-a
-    password: ${CLIENT_A_PASS}
+    password: client_a_pass
     rate_limit: { messages_per_second: 1000 }
 
   - system_id: client-b
-    password: ${CLIENT_B_PASS}
+    password: client_b_pass
     rate_limit: { messages_per_second: 100 }
 ```
 
