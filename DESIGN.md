@@ -36,50 +36,224 @@ All features emerge from configuration - no mode flags.
 
 ## Architecture
 
+### High-Level Overview
+
+```mermaid
+graph TB
+    subgraph Clients
+        ESME1[ESME 1]
+        ESME2[ESME 2]
+        HTTP[HTTP Client]
+        GRPC[gRPC Client]
+    end
+
+    subgraph smppd[smppd]
+        subgraph Listeners
+            L1[SMPP :2775]
+            L2[SMPP :8775 TLS]
+            L3[HTTP :8080]
+            L4[gRPC :9090]
+        end
+
+        MW[Middleware Chain]
+        RT[Routing Engine]
+
+        subgraph Upstreams
+            UP1[carrier-a]
+            UP2[carrier-b]
+            UP3[backup]
+        end
+    end
+
+    subgraph SMSCs
+        SMSC1[SMSC 1]
+        SMSC2[SMSC 2]
+        SMSC3[SMSC 3]
+    end
+
+    ESME1 --> L1
+    ESME2 --> L2
+    HTTP --> L3
+    GRPC --> L4
+
+    L1 --> MW
+    L2 --> MW
+    L3 --> MW
+    L4 --> MW
+
+    MW --> RT
+
+    RT --> UP1
+    RT --> UP2
+    RT --> UP3
+
+    UP1 --> SMSC1
+    UP1 --> SMSC2
+    UP2 --> SMSC2
+    UP3 --> SMSC3
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              smppd                                       │
-│                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │                         Listeners                                │    │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐         │    │
-│  │  │  SMPP    │  │  SMPP    │  │   HTTP   │  │   gRPC   │         │    │
-│  │  │  :2775   │  │  :8775   │  │  :8080   │  │  :9090   │         │    │
-│  │  │  (plain) │  │  (TLS)   │  │  (REST)  │  │          │         │    │
-│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘         │    │
-│  └───────┼─────────────┼─────────────┼─────────────┼───────────────┘    │
-│          │             │             │             │                     │
-│          └─────────────┴──────┬──────┴─────────────┘                     │
-│                               ▼                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │                      Middleware Chain                            │    │
-│  │  Auth → RateLimit → AddressFilter → Transform → Metrics         │    │
-│  └─────────────────────────────┬───────────────────────────────────┘    │
-│                                ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │                      Routing Engine                              │    │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐         │    │
-│  │  │  Prefix  │  │   Cost   │  │   MNP    │  │   Lua    │         │    │
-│  │  │  Match   │  │  Based   │  │  Lookup  │  │  Rules   │         │    │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘         │    │
-│  └─────────────────────────────┬───────────────────────────────────┘    │
-│                                ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │                       Upstream Pools                             │    │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │    │
-│  │  │  carrier-a  │  │  carrier-b  │  │   backup    │              │    │
-│  │  │  ┌───┬───┐  │  │  ┌───┬───┐  │  │  ┌───┐      │              │    │
-│  │  │  │ 1 │ 2 │  │  │  │ 1 │ 2 │  │  │  │ 1 │      │              │    │
-│  │  │  └───┴───┘  │  │  └───┴───┘  │  │  └───┘      │              │    │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘              │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-              ┌──────────┐  ┌──────────┐  ┌──────────┐
-              │  SMSC 1  │  │  SMSC 2  │  │  SMSC 3  │
-              └──────────┘  └──────────┘  └──────────┘
+
+### Message Flow
+
+```mermaid
+sequenceDiagram
+    participant Client as ESME/HTTP Client
+    participant Listener
+    participant Auth
+    participant RateLimit
+    participant Router
+    participant Pool as Upstream Pool
+    participant SMSC
+
+    Client->>Listener: submit_sm / POST /messages
+    Listener->>Auth: Authenticate
+    Auth-->>Listener: OK
+    Listener->>RateLimit: Check limits
+    RateLimit-->>Listener: OK
+    Listener->>Router: Route message
+    Router->>Router: Match rules
+    Router->>Pool: Select upstream
+    Pool->>Pool: Load balance
+    Pool->>SMSC: submit_sm
+    SMSC-->>Pool: submit_sm_resp
+    Pool-->>Router: Response
+    Router-->>Listener: Response
+    Listener-->>Client: submit_sm_resp / 200 OK
+```
+
+### Component Architecture
+
+```mermaid
+graph LR
+    subgraph Listeners
+        SMPP[SMPP Listener]
+        HTTP[HTTP Listener]
+        GRPC[gRPC Listener]
+    end
+
+    subgraph Middleware
+        AUTH[Auth]
+        RL[Rate Limit]
+        AF[Address Filter]
+        TR[Transform]
+        MET[Metrics]
+    end
+
+    subgraph Routing
+        PM[Prefix Match]
+        CB[Cost Based]
+        MNP[MNP/HLR]
+        LUA[Lua Scripts]
+    end
+
+    subgraph Pool[Connection Pool]
+        LB[Load Balancer]
+        HC[Health Check]
+        FO[Failover]
+    end
+
+    SMPP --> AUTH
+    HTTP --> AUTH
+    GRPC --> AUTH
+
+    AUTH --> RL --> AF --> TR --> MET
+
+    MET --> PM
+    MET --> CB
+    MET --> MNP
+    MET --> LUA
+
+    PM --> LB
+    CB --> LB
+    MNP --> LB
+    LUA --> LB
+
+    LB --> HC
+    HC --> FO
+```
+
+### Upstream Connection Pool
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle: Create
+    Idle --> Binding: bind_transceiver
+    Binding --> Active: bind_resp OK
+    Binding --> Failed: bind_resp Error
+    Active --> Active: submit_sm/deliver_sm
+    Active --> Draining: Shutdown requested
+    Active --> Failed: Connection error
+    Draining --> Closed: All responses received
+    Failed --> Reconnecting: Auto-reconnect
+    Reconnecting --> Binding: Retry
+    Reconnecting --> Failed: Max retries
+    Closed --> [*]
+    Failed --> [*]: Permanent failure
+```
+
+### Failover Flow
+
+```mermaid
+flowchart TD
+    A[Message arrives] --> B{Primary healthy?}
+    B -->|Yes| C[Send to primary]
+    B -->|No| D{Failover configured?}
+    C --> E{Success?}
+    E -->|Yes| F[Return response]
+    E -->|No| G[Increment failure count]
+    G --> H{Threshold exceeded?}
+    H -->|Yes| I[Mark unhealthy]
+    H -->|No| J{Retry enabled?}
+    I --> D
+    J -->|Yes| C
+    J -->|No| D
+    D -->|Yes| K[Send to failover]
+    D -->|No| L[Return error]
+    K --> F
+```
+
+### Routing Decision Tree
+
+```mermaid
+flowchart TD
+    A[Incoming Message] --> B{Lua script?}
+    B -->|Yes| C[Execute Lua]
+    C --> Z[Route to upstream]
+    B -->|No| D{MNP enabled?}
+    D -->|Yes| E[MNP Lookup]
+    E --> F{Operator match?}
+    F -->|Yes| Z
+    F -->|No| G{Cost routing?}
+    D -->|No| G
+    G -->|Yes| H[Calculate costs]
+    H --> I[Select cheapest]
+    I --> Z
+    G -->|No| J{Prefix match?}
+    J -->|Yes| K[Match prefixes]
+    K --> Z
+    J -->|No| L[Default route]
+    L --> Z
+```
+
+### Cluster Synchronization
+
+```mermaid
+sequenceDiagram
+    participant N1 as Node 1
+    participant N2 as Node 2
+    participant N3 as Node 3
+
+    Note over N1,N3: Session sync
+    N1->>N2: Session created (client-a)
+    N1->>N3: Session created (client-a)
+
+    Note over N1,N3: Config reload
+    N2->>N1: Config updated
+    N2->>N3: Config updated
+
+    Note over N1,N3: Health status
+    N3->>N1: Upstream carrier-a unhealthy
+    N3->>N2: Upstream carrier-a unhealthy
 ```
 
 ---
@@ -805,6 +979,28 @@ auth:
 
 ## Middleware
 
+### Processing Pipeline
+
+```mermaid
+flowchart LR
+    IN[Incoming PDU] --> A[Logger]
+    A --> B[Auth]
+    B --> C[Rate Limit]
+    C --> D[Address Filter]
+    D --> E[Transform]
+    E --> F[Protocol]
+    F --> G[Metrics]
+    G --> OUT[Routing Engine]
+
+    style A fill:#e1f5fe
+    style B fill:#fff3e0
+    style C fill:#fce4ec
+    style D fill:#f3e5f5
+    style E fill:#e8f5e9
+    style F fill:#fff8e1
+    style G fill:#e0f2f1
+```
+
 Processing pipeline:
 
 ```yaml
@@ -858,6 +1054,30 @@ middleware:
 
 ## Multipart Handling
 
+### Segmentation and Reassembly
+
+```mermaid
+flowchart TB
+    subgraph Outgoing[Outgoing - Segmentation]
+        O1[Long message] --> O2{> 160 chars?}
+        O2 -->|No| O3[Single PDU]
+        O2 -->|Yes| O4[Split into parts]
+        O4 --> O5[Add UDH/SAR TLV]
+        O5 --> O6[Submit each part]
+    end
+
+    subgraph Incoming[Incoming - Reassembly]
+        I1[Receive part] --> I2{Has UDH/SAR?}
+        I2 -->|No| I3[Deliver as-is]
+        I2 -->|Yes| I4[Buffer part]
+        I4 --> I5{All parts received?}
+        I5 -->|No| I6[Wait for more]
+        I6 --> I1
+        I5 -->|Yes| I7[Reassemble]
+        I7 --> I8[Deliver complete message]
+    end
+```
+
 ```yaml
 multipart:
   # Reassembly for incoming
@@ -881,6 +1101,55 @@ multipart:
 ---
 
 ## Storage
+
+### Message Storage Architecture
+
+```mermaid
+flowchart LR
+    subgraph Incoming
+        DS[deliver_sm] --> P{Parse}
+        P --> MO[MO Message]
+        P --> DLR[DLR Receipt]
+    end
+
+    subgraph Storage
+        MO --> DB[(SQLite/BadgerDB)]
+        DLR --> DB
+        SS[submit_sm] --> DB
+    end
+
+    subgraph Query
+        DB --> CLI[CLI Query]
+        DB --> API[gRPC/HTTP API]
+        DB --> CDR[CDR Export]
+    end
+```
+
+### Delivery Receipt Flow
+
+```mermaid
+sequenceDiagram
+    participant ESME
+    participant smppd
+    participant SMSC
+    participant Storage
+
+    ESME->>smppd: submit_sm (registered_delivery=1)
+    smppd->>Storage: Store submit_sm
+    smppd->>SMSC: submit_sm
+    SMSC-->>smppd: submit_sm_resp (message_id)
+    smppd->>Storage: Update with message_id
+    smppd-->>ESME: submit_sm_resp
+
+    Note over SMSC: Message delivered
+
+    SMSC->>smppd: deliver_sm (DLR)
+    smppd->>Storage: Store DLR
+    smppd->>Storage: Correlate with submit_sm
+    smppd-->>SMSC: deliver_sm_resp
+    smppd->>ESME: deliver_sm (DLR)
+    ESME-->>smppd: deliver_sm_resp
+```
 
 Local message storage (like smpp-cli daemon):
 
@@ -966,6 +1235,46 @@ tracing:
 ---
 
 ## High Availability
+
+### Cluster Architecture
+
+```mermaid
+graph TB
+    subgraph LoadBalancer[External Load Balancer]
+        LB[HAProxy/Nginx/K8s]
+    end
+
+    subgraph Cluster[smppd Cluster]
+        N1[Node 1]
+        N2[Node 2]
+        N3[Node 3]
+    end
+
+    subgraph Discovery
+        K8S[Kubernetes]
+        CONSUL[Consul]
+    end
+
+    subgraph SharedState
+        REDIS[(Redis/etcd)]
+    end
+
+    LB --> N1
+    LB --> N2
+    LB --> N3
+
+    N1 <--> N2
+    N2 <--> N3
+    N1 <--> N3
+
+    N1 --> K8S
+    N2 --> K8S
+    N3 --> K8S
+
+    N1 --> REDIS
+    N2 --> REDIS
+    N3 --> REDIS
+```
 
 ### Clustering
 
@@ -1082,6 +1391,35 @@ $ smppd cdr export --from 2025-12-01 --to 2025-12-27
 
 ## Deployment
 
+### Deployment Options
+
+```mermaid
+graph TB
+    subgraph Binary[Binary Deployment]
+        BIN[smppd binary]
+        SYSTEMD[systemd service]
+        BIN --> SYSTEMD
+    end
+
+    subgraph Container[Container Deployment]
+        DOCKER[Docker]
+        COMPOSE[Docker Compose]
+        DOCKER --> COMPOSE
+    end
+
+    subgraph Orchestration[Kubernetes Deployment]
+        DEPLOY[Deployment]
+        SVC[Service]
+        HPA[HPA]
+        CM[ConfigMap]
+        SEC[Secret]
+        DEPLOY --> SVC
+        DEPLOY --> HPA
+        CM --> DEPLOY
+        SEC --> DEPLOY
+    end
+```
+
 ### Binary
 
 ```bash
@@ -1155,6 +1493,31 @@ WantedBy=multi-user.target
 ---
 
 ## Package Structure
+
+### Module Dependencies
+
+```mermaid
+graph TB
+    CMD[cmd/smppd] --> SERVER[internal/server]
+    CMD --> CONFIG[internal/config]
+
+    SERVER --> LISTENER[internal/listener]
+    SERVER --> UPSTREAM[internal/upstream]
+    SERVER --> ROUTER[internal/router]
+    SERVER --> MW[internal/middleware]
+    SERVER --> STORAGE[internal/storage]
+    SERVER --> CLUSTER[internal/cluster]
+    SERVER --> API[internal/api]
+
+    LISTENER --> MW
+    MW --> ROUTER
+    ROUTER --> UPSTREAM
+
+    LISTENER --> SMPPGO[smpp-go]
+    UPSTREAM --> SMPPGO
+
+    STORAGE --> SQLITE[modernc.org/sqlite]
+```
 
 ```
 smppd/
