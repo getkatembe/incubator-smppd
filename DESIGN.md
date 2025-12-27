@@ -698,17 +698,17 @@ upstreams:
 routes:
   - name: mozambique
     match:
-      destination_addr: "+258*"
+      dest_addr: "+258*"
     upstream: carrier-a
 
   - name: south-africa
     match:
-      destination_addr: "+27*"
+      dest_addr: "+27*"
     upstream: carrier-b
 
   - name: default
     match:
-      destination_addr: "*"
+      dest_addr: "*"
     upstream: carrier-a
     failover: backup
 
@@ -1181,13 +1181,13 @@ routes:
   # Match by destination prefix
   - name: mozambique-vodacom
     match:
-      destination_addr: "+25884*"
+      dest_addr: "+25884*"
     upstream: vodacom-mz
 
   # Match by destination prefix (country)
   - name: mozambique
     match:
-      destination_addr: "+258*"
+      dest_addr: "+258*"
     upstream: carrier-a
 
   # Match by source address
@@ -1211,7 +1211,7 @@ routes:
   # Match by time
   - name: night-rates
     match:
-      destination_addr: "*"
+      dest_addr: "*"
       schedule:
         timezone: "Africa/Maputo"
         hours: "22:00-06:00"
@@ -1220,7 +1220,7 @@ routes:
   # Multiple conditions (AND)
   - name: complex-route
     match:
-      destination_addr: "+258*"
+      dest_addr: "+258*"
       source_addr_ton: 5  # Alphanumeric
       client: "client-a"
     upstream: carrier-a
@@ -1228,7 +1228,7 @@ routes:
   # Default route (catch-all)
   - name: default
     match:
-      destination_addr: "*"
+      dest_addr: "*"
     upstream: carrier-a
     failover: backup
 ```
@@ -1239,7 +1239,7 @@ routes:
 routes:
   - name: cost-optimized
     match:
-      destination_addr: "*"
+      dest_addr: "*"
     upstream: cost-pool
 
 upstreams:
@@ -1295,14 +1295,14 @@ routes:
 routes:
   - name: custom-logic
     match:
-      destination_addr: "*"
+      dest_addr: "*"
     script: /etc/smppd/routing.lua
 ```
 
 ```lua
 -- /etc/smppd/routing.lua
 function route(msg, ctx)
-    local dest = msg.destination_addr
+    local dest = msg.dest_addr
     local client = ctx.client_id
 
     -- Premium clients get direct routes
@@ -1437,348 +1437,335 @@ sequenceDiagram
 
 ---
 
-## Built-in Simulator
+## Mock Responses
 
-Full SMSC simulator for development, testing, and CI/CD - no external dependencies, no costs.
+Routes can respond directly without forwarding to an upstream. This enables testing, simulation, and hybrid deployments using the same configuration language.
 
-### Simulator Modes
+### Direct Response
 
 ```yaml
-simulator:
-  enabled: true
-  mode: smsc                        # smsc, carrier, chaos, record, replay
+routes:
+  # Success response
+  - name: test-success
+    match:
+      dest_addr: "+99900*"
+    response:
+      status: ESME_ROK
+      message_id: "{{uuid}}"
+      dlr:
+        delay: 5s
+        state: DELIVRD
 
-  # Protocol support
-  protocol:
-    versions: [v33, v34, v50]       # All SMPP versions
-    tls: true
-    flow_control: true              # SMPP v5 flow control
-    congestion: true                # SMPP v5 congestion states
+  # Error response
+  - name: test-invalid
+    match:
+      dest_addr: "+99901*"
+    response:
+      status: ESME_RINVDSTADR
 
-  # Connection limits
-  connections:
-    max_binds_per_ip: unlimited     # vs Melrose 25-250
-    max_credentials: unlimited      # vs Melrose limited/paid
-    credential_expiry: never        # vs Melrose 90 days
-
-  # Performance
-  performance:
-    max_tps: 50000                  # vs Melrose 100-10,000
-    latency:
-      min: 1ms
-      max: 100ms
-      distribution: normal          # normal, uniform, fixed, p99
-
-  # Simulated SMSC behavior
-  behavior:
-    # Response delay
-    latency:
-      min: 10ms
-      max: 100ms
-      distribution: normal
-
-    # Delivery receipt delay
-    dlr_delay:
-      min: 1s
-      max: 30s
-
-    # Error rates
-    errors:
-      submit_fail_rate: 0.01        # 1% submit failures
-      delivery_fail_rate: 0.05      # 5% delivery failures
-      throttle_rate: 0.001          # 0.1% throttling
-
-    # Error codes to return
-    error_codes:
-      - code: 0x00000008            # System error
-        weight: 50
-      - code: 0x00000058            # Throttled
-        weight: 30
-      - code: 0x00000014            # Invalid dest
-        weight: 20
-
-  # Message ID generation
-  message_id:
-    format: uuid                    # uuid, sequential, random, carrier
-    prefix: "SIM"
-
-  # DLR generation
-  dlr:
-    enabled: true
-    states:
-      - state: DELIVRD
-        weight: 90
-      - state: UNDELIV
-        weight: 5
-      - state: EXPIRED
-        weight: 5
-
-  # MO generation (for testing)
-  mo:
-    enabled: false
-    rate: 10                        # Messages per second
-    source: "+258841234567"
-    destination: "12345"
-    text: "Test MO message"
+  # Throttle response
+  - name: test-throttle
+    match:
+      dest_addr: "+99902*"
+    response:
+      status: ESME_RTHROTTLED
 ```
 
-### Carrier Emulation Profiles
-
-Simulate real carrier behavior:
+### Weighted Random Responses
 
 ```yaml
-simulator:
-  mode: carrier
-  carrier_profile: vodacom_mz       # Pre-built carrier profiles
+routes:
+  - name: test-chaos
+    match:
+      dest_addr: "+99910*"
+    response:
+      random:
+        - weight: 85
+          status: ESME_ROK
+          message_id: "{{uuid}}"
+          dlr: { delay: 5s, state: DELIVRD }
+        - weight: 5
+          status: ESME_ROK
+          message_id: "{{uuid}}"
+          dlr: { delay: 5s, state: UNDELIV }
+        - weight: 5
+          status: ESME_RTHROTTLED
+        - weight: 3
+          status: ESME_RSYSERR
+        - weight: 2
+          status: ESME_RINVDSTADR
+```
 
-  # Or define custom profile
-  custom_profile:
-    name: "MyCarrier"
+### Response Templates
 
-    # Carrier-specific message ID format
-    message_id:
-      format: "^[A-F0-9]{8}-[A-F0-9]{4}$"
-
-    # Carrier-specific DLR format
+```yaml
+response_templates:
+  # Carrier-like behavior
+  vodacom:
+    status: ESME_ROK
+    message_id: "{{hex:8}}-{{hex:4}}"
+    latency: { min: 20ms, max: 100ms }
     dlr:
-      format: "id:{id} sub:001 dlvrd:001 submit date:{submit} done date:{done} stat:{stat}"
+      delay: { min: 2s, max: 30s }
+      format: "id:{{id}} sub:001 dlvrd:001 submit date:{{submit}} done date:{{done}} stat:{{state}}"
+      states:
+        - { state: DELIVRD, weight: 92 }
+        - { state: UNDELIV, weight: 5 }
+        - { state: EXPIRED, weight: 3 }
 
-    # Carrier-specific error codes
-    errors:
-      invalid_dest: 0x00000014
-      throttled: 0x00000058
-
-    # Carrier-specific TLVs
-    tlvs:
-      - tag: 0x1403                 # network_error_code
-        on_error: true
-      - tag: 0x001E                 # receipted_message_id
-        on_dlr: true
-
-    # Carrier-specific timing
-    timing:
-      bind_response: 50ms
-      submit_response: 20ms
-      dlr_delay: 5s
-
-# Built-in carrier profiles
-carrier_profiles:
-  - vodacom_mz
-  - movitel_mz
-  - tmcel_mz
-  - vodacom_za
-  - mtn_za
-  - twilio
-  - nexmo
-  - sinch
-  - infobip
-  - generic_smpp34
-  - generic_smpp50
-```
-
-### Chaos Testing Mode
-
-Test resilience with controlled failures:
-
-```yaml
-simulator:
-  mode: chaos
-
-  chaos:
-    # Network-level chaos
-    network:
-      disconnect_rate: 0.001        # Random disconnects
-      timeout_rate: 0.01            # Response timeouts
-      corrupt_rate: 0.0001          # Corrupted PDUs
-
-    # Protocol-level chaos
-    protocol:
-      wrong_sequence: 0.001         # Wrong sequence numbers
-      duplicate_response: 0.001     # Duplicate responses
-      out_of_order: 0.01            # Out-of-order PDUs
-
-    # Application-level chaos
-    application:
-      random_error_rate: 0.05       # Random error codes
-      dlr_loss_rate: 0.02           # Lost DLRs
-      dlr_duplicate_rate: 0.01      # Duplicate DLRs
-      delayed_dlr_rate: 0.05        # Very delayed DLRs (hours)
-
-    # Scheduled chaos events
-    events:
-      - type: mass_disconnect
-        at: "*/5 * * * *"           # Every 5 minutes
-        duration: 10s
-      - type: throttle_storm
-        at: "0 * * * *"             # Every hour
-        duration: 60s
-        rate: 0.50                  # 50% throttle rate
-```
-
-### Record/Replay Mode
-
-Record production traffic, replay for testing:
-
-```yaml
-simulator:
-  mode: record
-
-  record:
-    enabled: true
-    output: /var/smppd/recordings/
-    format: pcap                    # pcap, json, protobuf
-
-    # What to record
-    capture:
-      binds: true
-      submits: true
-      delivers: true
-      dlrs: true
-
-    # Anonymization
-    anonymize:
-      msisdns: hash                 # hash, mask, none
-      content: redact               # redact, hash, none
-      system_ids: preserve
----
-simulator:
-  mode: replay
-
-  replay:
-    source: /var/smppd/recordings/2024-01-15.pcap
-    speed: 1.0                      # 1.0 = real-time, 2.0 = 2x speed
-    loop: true
-
-    # Timing adjustments
-    timing:
-      preserve_gaps: true           # Keep original timing gaps
-      max_gap: 10s                  # Cap gaps at 10s
-```
-
-### Protocol Compliance Testing
-
-Validate SMPP implementations:
-
-```yaml
-simulator:
-  mode: compliance
-
-  compliance:
-    # Test suites
-    suites:
-      - bind_sequence              # Correct bind/unbind flow
-      - pdu_validation             # PDU structure validation
-      - error_handling             # Error response handling
-      - flow_control               # SMPP v5 flow control
-      - congestion                 # Congestion handling
-      - tlv_handling               # Optional TLV handling
-      - encoding                   # Character encoding (GSM7, UCS2)
-      - concatenation              # Long message handling
-      - delivery_receipts          # DLR format compliance
-
-    # Strictness level
-    strict: true                   # Fail on any violation
-
-    # Report format
-    report:
-      format: junit                # junit, html, json
-      output: /var/smppd/compliance-report.xml
-```
-
-### Web UI for Testing
-
-Built-in web interface for manual testing:
-
-```yaml
-simulator:
-  ui:
-    enabled: true
-    port: 8080
-
-    # Features
-    features:
-      send_mt: true                # Send test MT messages
-      inject_mo: true              # Inject MO messages
-      inject_dlr: true             # Inject DLRs
-      view_traffic: true           # Real-time traffic view
-      edit_behavior: true          # Change simulator behavior
-      run_tests: true              # Run compliance tests
-```
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  smppd Simulator - Web UI                              [×]     │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
-│  │ Send MT     │ │ Inject MO   │ │ Inject DLR  │               │
-│  └─────────────┘ └─────────────┘ └─────────────┘               │
-├─────────────────────────────────────────────────────────────────┤
-│  Source: [+258841234567    ]  Dest: [12345          ]          │
-│  Message: [Hello World!                              ]          │
-│  [Send]                                                         │
-├─────────────────────────────────────────────────────────────────┤
-│  Traffic Log (live)                                             │
-│  ───────────────────────────────────────────────────────────── │
-│  14:23:01 ← BIND_TRX      client-a     OK                      │
-│  14:23:02 → SUBMIT_SM     +258841...   msg_id=SIM001           │
-│  14:23:02 ← SUBMIT_SM_R   SIM001       OK                      │
-│  14:23:05 → DELIVER_SM    DLR          DELIVRD                 │
-│  14:23:05 ← DELIVER_SM_R  OK                                   │
-├─────────────────────────────────────────────────────────────────┤
-│  Stats: 1,234 MT | 56 MO | 1,180 DLR | 99.2% success          │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Simulator Endpoints
-
-```
-POST /api/simulator/mo              - Inject MO message
-POST /api/simulator/dlr             - Inject DLR
-POST /api/simulator/error           - Trigger error
-GET  /api/simulator/stats           - Simulator stats
-POST /api/simulator/reset           - Reset counters
-```
-
-### Simulator as Upstream
-
-```yaml
-# Use simulator as an upstream for testing
-upstreams:
-  - name: test-smsc
-    type: simulator               # Built-in simulator
-    behavior:
-      latency: { min: 50ms, max: 200ms }
-      submit_fail_rate: 0.02
+  # Aggregator-like behavior
+  twilio:
+    status: ESME_ROK
+    message_id: "SM{{alphanum:32}}"
+    latency: { min: 50ms, max: 200ms }
+    dlr:
+      delay: { min: 1s, max: 60s }
+      states:
+        - { state: DELIVRD, weight: 95 }
+        - { state: UNDELIV, weight: 5 }
 
 routes:
-  - name: test-route
-    match:
-      destination_addr: "+999*"   # Test prefix
-    upstream: test-smsc
+  - name: mock-vodacom
+    match: { dest_addr: "+25884*" }
+    response:
+      template: vodacom
+
+  - name: mock-twilio
+    match: { dest_addr: "+1*" }
+    response:
+      template: twilio
 ```
 
-### Simulator gRPC
+### Hybrid Routing (Real + Mock)
 
-```protobuf
-service SimulatorService {
-  // Inject messages
-  rpc InjectMO(InjectMORequest) returns (InjectMOResponse);
-  rpc InjectDLR(InjectDLRRequest) returns (InjectDLRResponse);
+```yaml
+routes:
+  # Production traffic → real carriers
+  - name: mozambique
+    match:
+      dest_addr: "+258*"
+    upstream: vodacom-mz
 
-  // Control
-  rpc SetBehavior(SetBehaviorRequest) returns (SetBehaviorResponse);
-  rpc GetStats(GetStatsRequest) returns (SimulatorStats);
-  rpc Reset(ResetRequest) returns (ResetResponse);
-}
+  - name: south-africa
+    match:
+      dest_addr: "+27*"
+    upstream: mtn-za
 
-message SimulatorStats {
-  uint64 messages_received = 1;
-  uint64 messages_accepted = 2;
-  uint64 messages_rejected = 3;
-  uint64 dlrs_sent = 4;
-  uint64 mos_sent = 5;
-  map<uint32, uint64> error_counts = 6;
-}
+  # Test prefixes → mock responses
+  - name: test-success
+    match:
+      dest_addr: "+99900*"
+    response:
+      status: ESME_ROK
+      dlr: { state: DELIVRD }
+
+  - name: test-fail
+    match:
+      dest_addr: "+99901*"
+    response:
+      status: ESME_RINVDSTADR
+
+  # Staging → mock with realistic behavior
+  - name: staging
+    match:
+      source_system_id: "staging-*"
+    response:
+      template: vodacom
+```
+
+### Chaos Testing
+
+```yaml
+routes:
+  - name: chaos-test
+    match:
+      dest_addr: "+999*"
+    response:
+      chaos:
+        # Response variations
+        responses:
+          - { weight: 80, status: ESME_ROK }
+          - { weight: 10, status: ESME_RTHROTTLED }
+          - { weight: 5, status: ESME_RSYSERR }
+          - { weight: 5, status: ESME_RINVDSTADR }
+
+        # Latency variations
+        latency:
+          normal: { min: 20ms, max: 100ms, weight: 90 }
+          slow: { min: 1s, max: 5s, weight: 8 }
+          timeout: { min: 30s, max: 60s, weight: 2 }
+
+        # DLR chaos
+        dlr:
+          delivered: { weight: 85 }
+          failed: { weight: 5 }
+          delayed: { delay: 1h, weight: 5 }
+          missing: { weight: 3 }          # No DLR at all
+          duplicate: { weight: 2 }        # Send DLR twice
+```
+
+### Conditional Responses
+
+```yaml
+routes:
+  - name: conditional-mock
+    match:
+      dest_addr: "+999*"
+    response:
+      conditions:
+        # Rate limit simulation
+        - if: "{{rate}} > 100/s"
+          then: { status: ESME_RTHROTTLED }
+
+        # Time-based behavior
+        - if: "{{hour}} >= 22 || {{hour}} < 6"
+          then:
+            status: ESME_ROK
+            dlr: { delay: 2h, state: EXPIRED }  # Night = slow
+
+        # Content-based
+        - if: "{{short_message}} contains 'TEST'"
+          then: { status: ESME_ROK, dlr: { state: DELIVRD } }
+
+        # Default
+        - else:
+            status: ESME_ROK
+            dlr: { delay: 5s, state: DELIVRD }
+```
+
+### Message Injection (Testing MO/DLR)
+
+```yaml
+# API endpoints for injecting test messages
+api:
+  endpoints:
+    # Inject MO message (simulates incoming SMS)
+    - POST /api/inject/mo
+    # Inject DLR (simulates delivery receipt)
+    - POST /api/inject/dlr
+```
+
+```bash
+# Inject MO message
+curl -X POST http://localhost:8080/api/inject/mo \
+  -d '{"source": "+258841234567", "dest": "12345", "text": "Hello"}'
+
+# Inject DLR
+curl -X POST http://localhost:8080/api/inject/dlr \
+  -d '{"message_id": "abc123", "state": "DELIVRD"}'
+```
+
+### Quick Start (Testing Mode)
+
+```yaml
+# /etc/smppd/smppd.yaml - minimal test config
+listeners:
+  - name: smpp
+    type: smpp
+    address: :2775
+
+clients:
+  - system_id: test
+    password: test
+
+routes:
+  - name: all-success
+    match: { dest_addr: "*" }
+    response:
+      status: ESME_ROK
+      message_id: "{{uuid}}"
+      dlr: { delay: 5s, state: DELIVRD }
+```
+
+```bash
+# Run smppd as a mock SMSC
+smppd -c /etc/smppd/smppd.yaml
+
+# Connect any ESME to localhost:2775 with test/test
+```
+
+---
+
+## Extensions
+
+Optional capabilities via plugins.
+
+### Record/Replay Extension
+
+Capture production traffic for replay in testing:
+
+```yaml
+extensions:
+  - name: record-replay
+    type: go                        # Go plugin
+
+    record:
+      enabled: true
+      output: /var/smppd/recordings/
+      format: protobuf              # protobuf, json, pcap
+
+      capture:
+        binds: true
+        submits: true
+        delivers: true
+        dlrs: true
+
+      anonymize:
+        msisdns: hash               # hash, mask, none
+        content: redact             # redact, hash, none
+
+    replay:
+      enabled: false
+      source: /var/smppd/recordings/2024-01-15.pb
+      speed: 1.0                    # 1.0 = real-time
+      loop: false
+```
+
+### Compliance Testing Extension
+
+Validate SMPP protocol compliance:
+
+```yaml
+extensions:
+  - name: compliance
+    type: go
+
+    suites:
+      - bind_sequence
+      - pdu_validation
+      - error_handling
+      - encoding
+      - concatenation
+      - delivery_receipts
+
+    report:
+      format: junit
+      output: /var/smppd/compliance.xml
+```
+
+### Carrier Profiles Extension
+
+Pre-built behavior profiles for known carriers:
+
+```yaml
+extensions:
+  - name: carrier-profiles
+    type: go
+
+    # Loads carrier-specific response templates
+    profiles:
+      - vodacom_mz
+      - mtn_za
+      - twilio
+      - nexmo
+      - sinch
+
+# Then use in routes:
+routes:
+  - name: mock-carrier
+    match: { dest_addr: "+258*" }
+    response:
+      profile: vodacom_mz           # From extension
 ```
 
 ---
@@ -1917,9 +1904,9 @@ middleware:
 
       # Add country code
       - match:
-          destination_addr: "^8[0-9]{8}$"
+          dest_addr: "^8[0-9]{8}$"
         transform:
-          destination_addr: "+258${destination_addr}"
+          dest_addr: "+258${dest_addr}"
 
       # Append opt-out
       - match:
@@ -2273,7 +2260,7 @@ access_log:
       - client
       - command
       - source_addr
-      - destination_addr
+      - dest_addr
       - upstream
       - response_code
       - duration_ms
@@ -2376,7 +2363,7 @@ Split traffic between upstreams for testing:
 routes:
   - name: ab-test-carrier
     match:
-      destination_addr: "+258*"
+      dest_addr: "+258*"
     split:
       - upstream: carrier-a
         weight: 90
@@ -2395,7 +2382,7 @@ Gradual rollout to new upstreams:
 routes:
   - name: canary-rollout
     match:
-      destination_addr: "*"
+      dest_addr: "*"
     canary:
       upstream: new-carrier
       baseline: old-carrier
@@ -2424,20 +2411,20 @@ Route by client or destination geography:
 routes:
   - name: geo-africa
     match:
-      destination_addr: "+2*"    # Africa country codes
+      dest_addr: "+2*"    # Africa country codes
       client_locality:
         region: africa
     upstream: africa-carrier
 
   - name: geo-europe
     match:
-      destination_addr: "+3*"    # Europe
-      destination_addr: "+4*"
+      dest_addr: "+3*"    # Europe
+      dest_addr: "+4*"
     upstream: europe-carrier
 
   - name: geo-nearest
     match:
-      destination_addr: "*"
+      dest_addr: "*"
     upstream: nearest            # Auto-select by latency
 ```
 
@@ -2543,7 +2530,7 @@ firewall:
       # Premium rate fraud
       - name: premium_rate
         match:
-          destination_addr: "^(900|976|1-900)"
+          dest_addr: "^(900|976|1-900)"
         action: reject
 
     # Velocity checks
@@ -3149,7 +3136,7 @@ upstreams:
 routes:
   - name: primary
     match:
-      destination_addr: "*"
+      dest_addr: "*"
     upstream: carrier-a
     failover: backup  # Fallback upstream
 ```
@@ -3818,7 +3805,7 @@ message RouteInfo {
 }
 
 message TestRouteRequest {
-  string destination_addr = 1;
+  string dest_addr = 1;
   string source_addr = 2;
   string client = 3;
   string service_type = 4;
@@ -4030,7 +4017,7 @@ upstreams:
       password: mypass
 
 routes:
-  - match: { destination_addr: "*" }
+  - match: { dest_addr: "*" }
     upstream: smsc
 ```
 
@@ -4051,7 +4038,7 @@ upstreams:
       password: mypass
 
 routes:
-  - match: { destination_addr: "*" }
+  - match: { dest_addr: "*" }
     upstream: smsc
 
 clients:
@@ -4083,7 +4070,7 @@ upstreams:
       algorithm: weighted_round_robin
 
 routes:
-  - match: { destination_addr: "*" }
+  - match: { dest_addr: "*" }
     upstream: pool
 ```
 
@@ -4121,15 +4108,15 @@ upstreams:
 
 routes:
   - name: mozambique
-    match: { destination_addr: "+258*" }
+    match: { dest_addr: "+258*" }
     upstream: carrier-a
 
   - name: south-africa
-    match: { destination_addr: "+27*" }
+    match: { dest_addr: "+27*" }
     upstream: carrier-b
 
   - name: default
-    match: { destination_addr: "*" }
+    match: { dest_addr: "*" }
     upstream: carrier-a
     failover: backup
 
@@ -4248,8 +4235,8 @@ Based on [Melrose SMPP Router Documentation](https://melroselabs.scrollhelp.site
 | **Routing** |
 | | `routes-mt` rules | ✓ | ✓ `routes[]` | |
 | | Match: `exact` | ✓ | ✓ Glob + regex | |
-| | Match: `country` | ✓ | ✓ `destination_addr: "+258*"` | |
-| | Match: `ndc` | ✓ | ✓ `destination_addr: "+25884*"` | |
+| | Match: `country` | ✓ | ✓ `dest_addr: "+258*"` | |
+| | Match: `ndc` | ✓ | ✓ `dest_addr: "+25884*"` | |
 | | Match: `regex` | ✓ | ✓ Full regex support | |
 | | Match: `mcc` | ✓ | ✓ MNP lookup integration | |
 | | Match: `mnc` | ✓ | ✓ `mnc: "01"` | |
@@ -4467,6 +4454,8 @@ Based on [Melrose SMPP Router Documentation](https://melroselabs.scrollhelp.site
 
 ## Feature Comparison: smppd vs Melrose SMSC Simulator
 
+smppd doesn't have a separate "simulator mode" - it's the same smppd configured with mock responses. Same config language, same binary, same mental model.
+
 ### The Verdict: smppd Wins 30-0
 
 | Category | Feature | Melrose Simulator | smppd | Winner |
@@ -4477,8 +4466,11 @@ Based on [Melrose SMPP Router Documentation](https://melroselabs.scrollhelp.site
 | | AWS Marketplace | $0.271/hour | ✓ Free forever | 🏆 smppd |
 | | On-premises | $1,000-$3,300 | ✓ Free forever | 🏆 smppd |
 | | Annual support | $225/year | ✓ Community | 🏆 smppd |
+| **Approach** |
+| | Separate product | ✓ Different binary | ✗ Same smppd | 🏆 smppd |
+| | Config language | Simulator-specific | Same as production | 🏆 smppd |
+| | Hybrid (real+mock) | ✗ | ✓ Per-route | 🏆 smppd |
 | **Performance** |
-| | Shared TPS | 100 | N/A (no shared) | 🏆 smppd |
 | | Max TPS | 10,000 | **50,000+** | 🏆 smppd |
 | | Binds per IP | 25-250 | **Unlimited** | 🏆 smppd |
 | | Credentials | Limited/paid | **Unlimited** | 🏆 smppd |
@@ -4488,22 +4480,21 @@ Based on [Melrose SMPP Router Documentation](https://melroselabs.scrollhelp.site
 | | SMPP v3.4 | ✓ | ✓ | Tie |
 | | SMPP v5.0 | ✓ | ✓ | Tie |
 | | TLS | ✓ | ✓ | Tie |
-| | Flow control | ✓ | ✓ | Tie |
-| | Congestion states | ✓ | ✓ | Tie |
 | **Features** |
-| | Configurable DLRs | ✓ | ✓ | Tie |
-| | MO injection | ✓ | ✓ | Tie |
+| | Configurable DLRs | ✓ | ✓ Weighted random | 🏆 smppd |
+| | MO injection | ✓ | ✓ API endpoint | Tie |
 | | CDRs | Dedicated only | ✓ Always | 🏆 smppd |
 | | Prometheus | Dedicated only | ✓ Always | 🏆 smppd |
-| | Grafana | ✓ | ✓ | Tie |
-| **Advanced** |
-| | Carrier profiles | ✗ | ✓ 10+ carriers | 🏆 smppd |
+| **Mock Responses** |
+| | Response templates | ✗ | ✓ Reusable | 🏆 smppd |
+| | Weighted random | Basic | ✓ Per-code weights | 🏆 smppd |
+| | Latency simulation | Fixed | ✓ Distributions | 🏆 smppd |
+| | Conditional logic | ✗ | ✓ Rate/time/content | 🏆 smppd |
 | | Chaos testing | ✗ | ✓ Full suite | 🏆 smppd |
-| | Record/replay | ✗ | ✓ PCAP/JSON | 🏆 smppd |
-| | Compliance testing | ✗ | ✓ JUnit reports | 🏆 smppd |
-| | Web UI | ✗ | ✓ Built-in | 🏆 smppd |
-| | Custom error rates | Basic | ✓ Per-code weights | 🏆 smppd |
-| | Latency distribution | Fixed | ✓ Normal/uniform/p99 | 🏆 smppd |
+| **Extensions** |
+| | Carrier profiles | ✗ | ✓ Plugin | 🏆 smppd |
+| | Record/replay | ✗ | ✓ Plugin | 🏆 smppd |
+| | Compliance testing | ✗ | ✓ Plugin | 🏆 smppd |
 | **Deployment** |
 | | Docker | ✗ | ✓ Official image | 🏆 smppd |
 | | Kubernetes | ✗ | ✓ Helm chart | 🏆 smppd |
@@ -4514,39 +4505,46 @@ Based on [Melrose SMPP Router Documentation](https://melroselabs.scrollhelp.site
 | | Dedicated | £9,000-£10,800 | $0 | 🏆 smppd |
 | | On-prem | $3,300 + $450 | $0 | 🏆 smppd |
 
-### What They Charge vs What We Give Free
+### Why No Separate Simulator?
 
-| Melrose Tier | Their Price | smppd |
-|--------------|-------------|-------|
-| Shared (100 TPS, 90 days) | $225 | **Free, 50K TPS, forever** |
-| Dedicated (8K TPS, monthly) | £300/month | **Free, 50K TPS, forever** |
-| AWS (10K TPS, hourly) | $0.271/hour (~$200/month) | **Free, 50K TPS, forever** |
-| On-prem (5K TPS, perpetual) | $3,300 + $225/year | **Free, 50K TPS, forever** |
+| Melrose Approach | smppd Approach |
+|------------------|----------------|
+| Separate simulator product | Same smppd, different config |
+| Different config format | Same YAML, same concepts |
+| Can't mix real + mock | Routes can mix freely |
+| Learn two systems | Learn one system |
+| Pay for simulator | Already have it |
 
-### smppd Simulator Exclusive Features
+### Quick Start (Mock Responses)
 
-| Feature | Description |
-|---------|-------------|
-| **Carrier Profiles** | Pre-built profiles for Vodacom, MTN, Twilio, Nexmo, etc. |
-| **Chaos Mode** | Network chaos, protocol chaos, scheduled failure events |
-| **Record/Replay** | Capture production traffic, replay in tests |
-| **Compliance Testing** | Validate SMPP implementations with JUnit reports |
-| **Web UI** | Visual interface for manual testing |
-| **CI/CD Ready** | Docker, single binary, programmatic control |
+```yaml
+# /etc/smppd/test.yaml - mock SMSC config
+listeners:
+  - name: smpp
+    type: smpp
+    address: :2775
 
-### Quick Start
+clients:
+  - system_id: test
+    password: test
+
+routes:
+  - name: success
+    match: { dest_addr: "*" }
+    response:
+      status: ESME_ROK
+      message_id: "{{uuid}}"
+      dlr: { delay: 5s, state: DELIVRD }
+```
 
 ```bash
-# One command to run a full SMSC simulator
-smppd --simulator
+# Run smppd with mock responses
+smppd -c /etc/smppd/test.yaml
 
-# Or with Docker
-docker run -p 2775:2775 ghcr.io/getkatembe/smppd --simulator
+# Or Docker
+docker run -p 2775:2775 -v ./test.yaml:/etc/smppd/smppd.yaml ghcr.io/getkatembe/smppd
 
-# Connect your ESME
-# Host: localhost:2775
-# System ID: test
-# Password: test
+# Connect: localhost:2775, test/test
 ```
 
 ---
