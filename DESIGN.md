@@ -1058,6 +1058,233 @@ end
 
 ---
 
+## Credit Control
+
+Prepaid balance and usage quotas per client:
+
+```yaml
+credit_control:
+  enabled: true
+  backend: sqlite  # sqlite, redis, postgres
+
+  sqlite:
+    path: /var/lib/smppd/credits.db
+
+  # Or external
+  redis:
+    address: redis:6379
+    key_prefix: smppd:credits:
+```
+
+### Client Credits
+
+```yaml
+clients:
+  - system_id: client-a
+    password: client_a_pass
+
+    # Credit configuration
+    credits:
+      balance: 10000           # Current balance (messages or currency)
+      currency: messages       # messages, usd, eur
+      low_balance_threshold: 1000
+      on_exhausted: reject     # reject, queue, notify
+
+    # Usage quotas
+    quotas:
+      daily: 50000             # Max messages per day
+      monthly: 1000000         # Max messages per month
+      reset_time: "00:00"      # Daily reset time
+      timezone: "UTC"
+```
+
+### Credit Operations
+
+```yaml
+# Deduct on submit_sm_resp success
+deduct:
+  on: submit_sm_resp
+  amount: 1                    # Per message
+  multipart: per_part          # per_part, per_message
+
+# Cost-based deduction
+deduct:
+  on: submit_sm_resp
+  amount: cost                 # Use route cost
+  markup: 1.2                  # 20% markup
+```
+
+### Credit API
+
+```
+POST /api/credits/{client}/topup     - Add credits
+POST /api/credits/{client}/deduct    - Deduct credits
+GET  /api/credits/{client}           - Get balance
+GET  /api/credits/{client}/usage     - Usage history
+```
+
+### Credit gRPC
+
+```protobuf
+service CreditService {
+  rpc GetBalance(GetBalanceRequest) returns (Balance);
+  rpc TopUp(TopUpRequest) returns (Balance);
+  rpc Deduct(DeductRequest) returns (Balance);
+  rpc GetUsage(GetUsageRequest) returns (UsageReport);
+  rpc StreamBalance(StreamBalanceRequest) returns (stream Balance);
+}
+
+message Balance {
+  string client = 1;
+  int64 balance = 2;
+  string currency = 3;
+  int64 daily_used = 4;
+  int64 daily_quota = 5;
+  int64 monthly_used = 6;
+  int64 monthly_quota = 7;
+}
+```
+
+### Credit Flow
+
+```mermaid
+sequenceDiagram
+    participant ESME
+    participant smppd
+    participant Credits
+    participant Upstream
+
+    ESME->>smppd: submit_sm
+    smppd->>Credits: Check balance
+    alt Sufficient
+        Credits-->>smppd: OK
+        smppd->>Upstream: submit_sm
+        Upstream-->>smppd: submit_sm_resp
+        smppd->>Credits: Deduct
+        smppd-->>ESME: submit_sm_resp
+    else Insufficient
+        Credits-->>smppd: Rejected
+        smppd-->>ESME: submit_sm_resp (ESME_RINVCREDITS)
+    end
+```
+
+---
+
+## Built-in Simulator
+
+SMSC simulator mode for testing:
+
+```yaml
+simulator:
+  enabled: true
+
+  # Simulated SMSC behavior
+  behavior:
+    # Response delay
+    latency:
+      min: 10ms
+      max: 100ms
+      distribution: normal    # normal, uniform, fixed
+
+    # Delivery receipt delay
+    dlr_delay:
+      min: 1s
+      max: 30s
+
+    # Error rates
+    errors:
+      submit_fail_rate: 0.01        # 1% submit failures
+      delivery_fail_rate: 0.05      # 5% delivery failures
+      throttle_rate: 0.001          # 0.1% throttling
+
+    # Error codes to return
+    error_codes:
+      - code: 0x00000008            # System error
+        weight: 50
+      - code: 0x00000058            # Throttled
+        weight: 30
+      - code: 0x00000014            # Invalid dest
+        weight: 20
+
+  # Message ID generation
+  message_id:
+    format: uuid                    # uuid, sequential, random
+    prefix: "SIM"
+
+  # DLR generation
+  dlr:
+    enabled: true
+    states:
+      - state: DELIVRD
+        weight: 90
+      - state: UNDELIV
+        weight: 5
+      - state: EXPIRED
+        weight: 5
+
+  # MO generation (for testing)
+  mo:
+    enabled: false
+    rate: 10                        # Messages per second
+    source: "+258841234567"
+    destination: "12345"
+    text: "Test MO message"
+```
+
+### Simulator Endpoints
+
+```
+POST /api/simulator/mo              - Inject MO message
+POST /api/simulator/dlr             - Inject DLR
+POST /api/simulator/error           - Trigger error
+GET  /api/simulator/stats           - Simulator stats
+POST /api/simulator/reset           - Reset counters
+```
+
+### Simulator as Upstream
+
+```yaml
+# Use simulator as an upstream for testing
+upstreams:
+  - name: test-smsc
+    type: simulator               # Built-in simulator
+    behavior:
+      latency: { min: 50ms, max: 200ms }
+      submit_fail_rate: 0.02
+
+routes:
+  - name: test-route
+    match:
+      destination_addr: "+999*"   # Test prefix
+    upstream: test-smsc
+```
+
+### Simulator gRPC
+
+```protobuf
+service SimulatorService {
+  // Inject messages
+  rpc InjectMO(InjectMORequest) returns (InjectMOResponse);
+  rpc InjectDLR(InjectDLRRequest) returns (InjectDLRResponse);
+
+  // Control
+  rpc SetBehavior(SetBehaviorRequest) returns (SetBehaviorResponse);
+  rpc GetStats(GetStatsRequest) returns (SimulatorStats);
+  rpc Reset(ResetRequest) returns (ResetResponse);
+}
+
+message SimulatorStats {
+  uint64 messages_received = 1;
+  uint64 messages_accepted = 2;
+  uint64 messages_rejected = 3;
+  uint64 dlrs_sent = 4;
+  uint64 mos_sent = 5;
+  map<uint32, uint64> error_counts = 6;
+}
+```
+
+---
+
 ## Clients
 
 ESME authentication and authorization:
