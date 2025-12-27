@@ -22,6 +22,130 @@ All features emerge from configuration - no mode flags.
 5. **Observable** - Prometheus metrics, structured logging
 6. **Deployable anywhere** - Binary, Docker, Kubernetes
 
+### Internal Architecture (Envoy-inspired)
+
+```mermaid
+graph TB
+    subgraph MainThread[Main Goroutine]
+        CFG[Config Manager]
+        XDS[xDS Client]
+        AGG[Stats Aggregator]
+    end
+
+    subgraph Workers[Worker Pool]
+        W1[Worker 1]
+        W2[Worker 2]
+        W3[Worker N]
+    end
+
+    subgraph Worker1Detail[Worker Detail]
+        DISP[Dispatcher]
+        LCONN[Listener Conns]
+        UPOOL[Upstream Pool]
+        LSTATS[Local Stats]
+    end
+
+    CFG --> W1
+    CFG --> W2
+    CFG --> W3
+
+    W1 --> AGG
+    W2 --> AGG
+    W3 --> AGG
+```
+
+**Core Principles:**
+
+1. **Goroutine-per-connection** - Each connection owns its goroutine
+2. **No shared mutable state** - Channel-based communication
+3. **Connection affinity** - Request stays on same goroutine
+4. **Thread-local pools** - Each worker has own upstream connections
+5. **Lock-free hot path** - Atomic counters, no mutexes in message path
+
+**Filter Chain:**
+
+```mermaid
+flowchart LR
+    subgraph Inbound
+        R[Read] --> D[Decode]
+        D --> F1[Auth]
+        F1 --> F2[RateLimit]
+        F2 --> F3[Transform]
+    end
+
+    F3 --> Router
+
+    subgraph Outbound
+        Router --> E[Encode]
+        E --> W[Write]
+    end
+```
+
+- Filters implement `OnPDU(pdu) FilterStatus`
+- Return `Continue`, `Stop`, or `StopIteration`
+- Bidirectional: read filters + write filters
+
+**Ownership Model:**
+
+```
+DownstreamConn (owns) → Request (borrows) → UpstreamConn
+       │                                          │
+       └──────── same goroutine ──────────────────┘
+```
+
+**Extension Interfaces:**
+
+```go
+// Network filter (SMPP codec, TLS, etc)
+type NetworkFilter interface {
+    OnData(buf []byte) FilterStatus
+    OnPDU(pdu PDU) FilterStatus
+    OnWrite(pdu PDU) FilterStatus
+}
+
+// Load balancer
+type LoadBalancer interface {
+    Choose(ctx Context) (*Host, error)
+    OnSuccess(host *Host, latency time.Duration)
+    OnFailure(host *Host, err error)
+}
+
+// Health checker
+type HealthChecker interface {
+    Check(ctx Context, host *Host) error
+}
+
+// Retry policy
+type RetryPolicy interface {
+    ShouldRetry(attempt int, err error) (bool, time.Duration)
+}
+
+// Access logger
+type AccessLogger interface {
+    Log(entry *AccessLogEntry)
+}
+```
+
+**Hot Restart:**
+
+```mermaid
+sequenceDiagram
+    participant Old as Old Process
+    participant New as New Process
+    participant OS
+
+    New->>Old: Request socket FDs (Unix socket)
+    Old->>New: Send listener FDs
+    New->>OS: Start accepting on FDs
+    Old->>Old: Stop accepting, drain connections
+    Old->>Old: Wait for in-flight requests
+    Old->>OS: Exit
+```
+
+- New process inherits listener sockets
+- Old process drains gracefully
+- Zero dropped connections
+
 ### Target Performance
 
 | Metric | Target |
@@ -758,6 +882,22 @@ upstreams:
       recovery_time: 60s
       fallback: backup         # Upstream to failover to
 
+    # Circuit breaker (Envoy-style)
+    circuit_breaker:
+      max_connections: 100           # Max concurrent connections
+      max_pending_requests: 1000     # Max queued requests
+      max_requests: 10000            # Max active requests
+      max_retries: 3                 # Max concurrent retries
+
+    # Outlier detection (auto-eject unhealthy hosts)
+    outlier_detection:
+      consecutive_errors: 5          # Errors before ejection
+      interval: 10s                  # Analysis interval
+      base_ejection_time: 30s        # Min ejection duration
+      max_ejection_percent: 50       # Max % of hosts ejected
+      success_rate_minimum_hosts: 3  # Min hosts for stats
+      success_rate_threshold: 85     # Eject if below this %
+
     # Tags/metadata
     tags:
       region: eu
@@ -1226,6 +1366,48 @@ logging:
       max_files: 10
 ```
 
+### Access Logging
+
+```yaml
+access_log:
+  - name: file
+    path: /var/log/smppd/access.log
+    format: |
+      [%START_TIME%] %CLIENT% %COMMAND% %SOURCE%->%DESTINATION%
+      %UPSTREAM% %RESPONSE_CODE% %DURATION%ms %MESSAGE_ID%
+
+  - name: json
+    path: /var/log/smppd/access.json
+    format: json
+    fields:
+      - start_time
+      - client
+      - command
+      - source_addr
+      - destination_addr
+      - upstream
+      - response_code
+      - duration_ms
+      - message_id
+      - parts
+
+  - name: grpc
+    endpoint: log-collector:9000
+    format: proto
+```
+
+Format variables:
+- `%START_TIME%` - Request start timestamp
+- `%CLIENT%` - Client system_id
+- `%COMMAND%` - PDU command (submit_sm, deliver_sm)
+- `%SOURCE%` - Source address
+- `%DESTINATION%` - Destination address
+- `%UPSTREAM%` - Upstream name used
+- `%RESPONSE_CODE%` - SMPP response code
+- `%DURATION%` - Total duration in ms
+- `%MESSAGE_ID%` - Assigned message ID
+- `%PARTS%` - Number of parts (multipart)
+
 ### Tracing
 
 ```yaml
@@ -1282,6 +1464,61 @@ graph TB
     N2 --> REDIS
     N3 --> REDIS
 ```
+
+### Dynamic Configuration (xDS)
+
+```yaml
+# Static bootstrap + dynamic resources
+dynamic_resources:
+  # Listener Discovery Service
+  lds:
+    cluster: xds-cluster
+    refresh_delay: 5s
+
+  # Cluster (Upstream) Discovery Service
+  cds:
+    cluster: xds-cluster
+    refresh_delay: 5s
+
+  # Route Discovery Service
+  rds:
+    cluster: xds-cluster
+    route_config_name: default_routes
+
+# xDS server cluster
+upstreams:
+  - name: xds-cluster
+    type: static
+    hosts:
+      - address: xds.example.com:18000
+    bind:
+      type: grpc
+```
+
+```mermaid
+sequenceDiagram
+    participant smppd
+    participant xDS as xDS Server
+
+    smppd->>xDS: DiscoveryRequest (LDS)
+    xDS-->>smppd: DiscoveryResponse (Listeners)
+
+    smppd->>xDS: DiscoveryRequest (CDS)
+    xDS-->>smppd: DiscoveryResponse (Upstreams)
+
+    smppd->>xDS: DiscoveryRequest (RDS)
+    xDS-->>smppd: DiscoveryResponse (Routes)
+
+    Note over smppd: Apply config atomically
+
+    xDS-->>smppd: Push update (new routes)
+    smppd->>xDS: ACK
+```
+
+- File-based config for bootstrap
+- xDS streaming for dynamic updates
+- Atomic config application
+- Version tracking, NACK on errors
 
 ### Clustering
 
@@ -1343,18 +1580,38 @@ management:
 
 Endpoints:
 ```
-GET  /api/status              - Daemon status
+# Status & Debug (Envoy-style)
+GET  /ready                   - Readiness probe
+GET  /live                    - Liveness probe
+GET  /config_dump             - Full configuration dump
+GET  /stats                   - All metrics (Prometheus)
+GET  /stats?filter=upstream   - Filtered metrics
+GET  /stats?format=json       - JSON format
+
+# Runtime control
+POST /drain                   - Start graceful drain
+POST /drain?timeout=30s       - Drain with timeout
+POST /logging?level=debug     - Change log level
+
+# Clients
 GET  /api/clients             - List clients
 GET  /api/clients/{id}        - Client details
-DELETE /api/clients/{id}/connections  - Disconnect client
+DELETE /api/clients/{id}      - Disconnect client
 
+# Upstreams
 GET  /api/upstreams           - List upstreams
 GET  /api/upstreams/{name}    - Upstream details
 POST /api/upstreams/{name}/suspend
 POST /api/upstreams/{name}/resume
+POST /api/upstreams/{name}/drain    - Drain upstream
 
+# Routes
 GET  /api/routes              - List routes
+POST /api/routes/test         - Test route matching
+
+# Config
 POST /api/config/reload       - Reload configuration
+GET  /api/config/validate     - Validate config file
 ```
 
 ---
