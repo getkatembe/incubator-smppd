@@ -1649,6 +1649,319 @@ tracing:
 
 ---
 
+## Web Dashboard
+
+Built-in web UI for management and monitoring:
+
+```yaml
+dashboard:
+  enabled: true
+  address: :8082
+  auth:
+    type: basic
+    username: admin
+    password: admin_password
+```
+
+### Dashboard Features
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  smppd Dashboard                                    [admin ▼]   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │ 125,432  │  │  99.2%   │  │  2.3ms   │  │    42    │        │
+│  │ Messages │  │ Success  │  │ Latency  │  │ Clients  │        │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+│                                                                  │
+│  [Clients] [Upstreams] [Routes] [Credits] [Logs]               │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  Live Traffic Graph                               [1h ▼] │   │
+│  │  ▁▂▃▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂▁                          │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  Upstreams                                                      │
+│  ┌────────────┬────────┬─────────┬──────────┐                  │
+│  │ Name       │ Health │ TPS     │ Latency  │                  │
+│  ├────────────┼────────┼─────────┼──────────┤                  │
+│  │ carrier-a  │ ● OK   │ 523/s   │ 12ms     │                  │
+│  │ carrier-b  │ ● OK   │ 234/s   │ 8ms      │                  │
+│  │ backup     │ ○ Idle │ 0/s     │ -        │                  │
+│  └────────────┴────────┴─────────┴──────────┘                  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+- Real-time traffic graphs
+- Upstream health status
+- Client connections
+- Credit balances
+- Live log streaming
+- Config editor (YAML)
+
+---
+
+## Traffic Management
+
+### A/B Testing
+
+Split traffic between upstreams for testing:
+
+```yaml
+routes:
+  - name: ab-test-carrier
+    match:
+      destination_addr: "+258*"
+    split:
+      - upstream: carrier-a
+        weight: 90
+      - upstream: carrier-b-new
+        weight: 10
+    # Track metrics separately
+    metrics:
+      tag: ab_test_carrier_b
+```
+
+### Canary Deployments
+
+Gradual rollout to new upstreams:
+
+```yaml
+routes:
+  - name: canary-rollout
+    match:
+      destination_addr: "*"
+    canary:
+      upstream: new-carrier
+      baseline: old-carrier
+
+      # Rollout schedule
+      steps:
+        - weight: 1      # 1% traffic
+          duration: 1h
+        - weight: 5
+          duration: 2h
+        - weight: 25
+          duration: 4h
+        - weight: 100    # Full rollout
+
+      # Auto-rollback on errors
+      rollback:
+        error_rate: 0.05     # 5% errors
+        latency_p99: 500ms   # p99 > 500ms
+```
+
+### Geo Routing
+
+Route by client or destination geography:
+
+```yaml
+routes:
+  - name: geo-africa
+    match:
+      destination_addr: "+2*"    # Africa country codes
+      client_locality:
+        region: africa
+    upstream: africa-carrier
+
+  - name: geo-europe
+    match:
+      destination_addr: "+3*"    # Europe
+      destination_addr: "+4*"
+    upstream: europe-carrier
+
+  - name: geo-nearest
+    match:
+      destination_addr: "*"
+    upstream: nearest            # Auto-select by latency
+```
+
+---
+
+## Security
+
+### DDoS Protection
+
+Built-in protection against abuse:
+
+```yaml
+security:
+  ddos:
+    enabled: true
+
+    # Connection limits
+    connections:
+      max_per_ip: 100
+      max_per_client: 50
+      rate: 100/s              # New connections per second
+
+    # Bind flood protection
+    bind:
+      max_attempts: 5          # Per IP
+      lockout: 5m              # After failed attempts
+
+    # Message flood protection
+    submit:
+      rate_per_client: 1000/s
+      burst: 5000
+
+    # Suspicious patterns
+    patterns:
+      # Block rapid destination cycling
+      destination_rate: 100/s  # Unique destinations per second
+      # Block message bombs
+      same_destination: 50/s   # Same destination limit
+
+    # Auto-ban
+    auto_ban:
+      enabled: true
+      threshold: 3             # Violations before ban
+      duration: 1h
+
+    # IP reputation
+    reputation:
+      enabled: true
+      provider: abuseipdb      # abuseipdb, crowdsec, custom
+      block_score: 80
+```
+
+### Audit Logging
+
+Compliance-ready audit trail:
+
+```yaml
+audit:
+  enabled: true
+  path: /var/log/smppd/audit.log
+
+  # What to log
+  events:
+    - bind                     # All bind attempts
+    - bind_failure             # Failed binds
+    - config_change            # Config modifications
+    - credit_change            # Balance changes
+    - client_create            # New clients
+    - client_delete            # Removed clients
+    - upstream_change          # Upstream modifications
+    - admin_action             # Admin API calls
+
+  # Retention
+  retention:
+    days: 365                  # Keep for 1 year
+    compress: true
+
+  # External shipping
+  ship:
+    - type: syslog
+      address: syslog.example.com:514
+    - type: splunk
+      endpoint: https://splunk.example.com
+      token: splunk_token
+```
+
+Audit log format:
+```json
+{
+  "timestamp": "2025-12-27T10:30:00Z",
+  "event": "bind",
+  "actor": "192.168.1.100",
+  "client": "client-a",
+  "result": "success",
+  "details": {
+    "bind_type": "transceiver",
+    "listener": "smpp-main"
+  }
+}
+```
+
+---
+
+## Plugins
+
+### Go Plugins
+
+Extend smppd with Go plugins:
+
+```yaml
+plugins:
+  path: /etc/smppd/plugins
+
+  load:
+    - name: custom-auth
+      path: custom_auth.so
+      config:
+        api_url: https://auth.example.com
+
+    - name: message-enrichment
+      path: enrichment.so
+```
+
+Plugin interface:
+
+```go
+// Plugin interface
+type Plugin interface {
+    Name() string
+    Init(config map[string]any) error
+    Close() error
+}
+
+// Filter plugin
+type FilterPlugin interface {
+    Plugin
+    OnPDU(ctx context.Context, pdu PDU) (PDU, error)
+}
+
+// Auth plugin
+type AuthPlugin interface {
+    Plugin
+    Authenticate(ctx context.Context, bind BindRequest) (bool, error)
+}
+
+// Router plugin
+type RouterPlugin interface {
+    Plugin
+    Route(ctx context.Context, msg Message) (string, error)
+}
+```
+
+### WASM Plugins
+
+Language-agnostic plugins via WebAssembly:
+
+```yaml
+plugins:
+  wasm:
+    - name: custom-filter
+      path: /etc/smppd/plugins/filter.wasm
+      runtime: wazero           # wazero, wasmtime
+      memory: 16MB
+
+    - name: rust-router
+      path: /etc/smppd/plugins/router.wasm
+```
+
+WASM interface:
+
+```rust
+// Rust example
+#[no_mangle]
+pub extern "C" fn on_submit_sm(ptr: *const u8, len: usize) -> i32 {
+    let msg = unsafe { parse_message(ptr, len) };
+
+    // Custom logic
+    if msg.destination.starts_with("+999") {
+        return REJECT;
+    }
+
+    CONTINUE
+}
+```
+
+---
+
 ## High Availability
 
 ### Cluster Architecture
@@ -2961,24 +3274,49 @@ clients:
 
 ## Feature Comparison
 
-| Feature | Melrose Labs (4 products) | smppd (1 product) |
-|---------|---------------------------|-------------------|
-| SMPP Gateway | ✓ | ✓ |
-| SMPP Router | ✓ | ✓ |
-| SMPP Load Balancer | ✓ | ✓ |
-| SMPP Proxy | ✓ | ✓ |
-| HTTP API | ✓ | ✓ |
-| gRPC API | ? | ✓ |
-| Cost-based Routing | ✓ | ✓ |
-| MNP/HLR Lookup | ✓ | ✓ |
-| Lua Scripting | ? | ✓ |
-| TLS/mTLS | ✓ | ✓ |
-| Rate Limiting | ✓ | ✓ |
-| Failover | ✓ | ✓ |
-| Clustering | ✓ | ✓ |
-| Prometheus Metrics | ✓ | ✓ |
-| Configuration-driven | ? | ✓ |
-| Open Source | ✗ | ✓ (Apache 2.0) |
+| Feature | Melrose Router | smppd | Winner |
+|---------|---------------|-------|--------|
+| **Licensing** |
+| Open Source | ✗ Closed | ✓ Apache 2.0 | 🏆 smppd |
+| Free Forever | ✗ Expires 2025 | ✓ Forever | 🏆 smppd |
+| TPS Limits | ✗ Licensed tiers | ✓ Unlimited | 🏆 smppd |
+| **Deployment** |
+| Docker | ✗ Manual | ✓ Official images | 🏆 smppd |
+| Kubernetes | ✗ On request | ✓ Helm charts | 🏆 smppd |
+| Cloud-native | ✗ On-prem focus | ✓ Built for cloud | 🏆 smppd |
+| Hot Restart | ✗ Downtime | ✓ Zero-downtime | 🏆 smppd |
+| **UI/UX** |
+| Web Dashboard | ✗ CLI only | ✓ Built-in UI | 🏆 smppd |
+| Real-time Stats | ? | ✓ Live dashboard | 🏆 smppd |
+| **Protocol** |
+| SMPP v3.3 | ✗ | ✓ | 🏆 smppd |
+| SMPP v3.4 | ✓ | ✓ | Tie |
+| SMPP v5.0 | ✓ | ✓ | Tie |
+| gRPC API | ✗ | ✓ | 🏆 smppd |
+| **Configuration** |
+| Static Config | ✓ | ✓ | Tie |
+| Dynamic Streaming | ✗ | ✓ gRPC stream | 🏆 smppd |
+| Hot Reload | ? | ✓ Zero-drop | 🏆 smppd |
+| **Extensibility** |
+| Lua Scripting | ✗ | ✓ | 🏆 smppd |
+| Go Plugins | ✗ | ✓ | 🏆 smppd |
+| WASM Plugins | ✗ | ✓ | 🏆 smppd |
+| **Observability** |
+| Prometheus | ✓ | ✓ | Tie |
+| OpenTelemetry | ✗ | ✓ | 🏆 smppd |
+| Jaeger/Zipkin | ✗ | ✓ | 🏆 smppd |
+| **Advanced Routing** |
+| A/B Testing | ✗ | ✓ Traffic split | 🏆 smppd |
+| Canary Deploy | ✗ | ✓ Gradual rollout | 🏆 smppd |
+| Geo Routing | ✗ | ✓ Region/zone | 🏆 smppd |
+| **Security** |
+| DDoS Protection | ✗ | ✓ Built-in | 🏆 smppd |
+| Audit Logging | ✗ | ✓ Compliance | 🏆 smppd |
+| **Performance** |
+| Max TPS | 5,000 | 10,000+ | 🏆 smppd |
+| **Cost** |
+| License | £995+ | $0 | 🏆 smppd |
+| Support | £345/year | Community + paid | 🏆 smppd |
 
 ---
 
