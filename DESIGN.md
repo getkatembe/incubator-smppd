@@ -1006,14 +1006,6 @@ flowchart LR
     E --> F[Protocol]
     F --> G[Metrics]
     G --> OUT[Routing Engine]
-
-    style A fill:#e1f5fe
-    style B fill:#fff3e0
-    style C fill:#fce4ec
-    style D fill:#f3e5f5
-    style E fill:#e8f5e9
-    style F fill:#fff8e1
-    style G fill:#e0f2f1
 ```
 
 Processing pipeline:
