@@ -1473,19 +1473,81 @@ config:
     path: /etc/smppd/smppd.yaml
     watch: true              # Auto-reload on change
 
-  # Or remote config server
-  remote:
-    url: https://config.example.com/smppd
-    interval: 30s
-    auth:
-      type: bearer
-      token: config_token
+  # Or gRPC streaming from config server
+  streaming:
+    address: config.example.com:9000
+    tls:
+      enabled: true
+      ca: /etc/smppd/certs/ca.crt
+    node_id: smppd-node-1
+    resources:
+      - listeners
+      - upstreams
+      - routes
+      - clients
 ```
 
-- File watch with inotify
-- Remote polling with ETag/If-Modified-Since
-- Atomic apply (validate before swap)
-- Graceful drain of old connections on upstream changes
+```mermaid
+sequenceDiagram
+    participant smppd
+    participant ConfigServer
+
+    smppd->>ConfigServer: Subscribe(node_id, resources)
+    ConfigServer-->>smppd: ConfigSnapshot (version: 1)
+    Note over smppd: Apply config
+
+    loop On change
+        ConfigServer-->>smppd: ConfigUpdate (version: 2)
+        smppd->>smppd: Validate
+        alt Valid
+            smppd->>ConfigServer: Ack(version: 2)
+            Note over smppd: Apply atomically
+        else Invalid
+            smppd->>ConfigServer: Nack(version: 2, error)
+        end
+    end
+```
+
+**Config Service (proto):**
+
+```protobuf
+service ConfigService {
+  // Subscribe to config updates
+  rpc Subscribe(SubscribeRequest) returns (stream ConfigUpdate);
+
+  // Acknowledge config applied
+  rpc Ack(AckRequest) returns (AckResponse);
+}
+
+message SubscribeRequest {
+  string node_id = 1;
+  repeated string resources = 2;  // listeners, upstreams, routes, clients
+  string last_version = 3;        // Resume from version
+}
+
+message ConfigUpdate {
+  string version = 1;
+
+  repeated Listener listeners = 2;
+  repeated Upstream upstreams = 3;
+  repeated Route routes = 4;
+  repeated Client clients = 5;
+
+  bool full_snapshot = 6;         // Full or incremental
+}
+
+message AckRequest {
+  string node_id = 1;
+  string version = 2;
+  bool success = 3;
+  string error = 4;
+}
+```
+
+- gRPC streaming for real-time updates
+- Version tracking with Ack/Nack
+- Incremental or full snapshot
+- Graceful drain on upstream changes
 
 ### Clustering
 
