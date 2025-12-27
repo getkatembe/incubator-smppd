@@ -290,6 +290,7 @@ listeners:
 upstreams:
   - name: carrier-a
     hosts:
+      # Hosts can share upstream-level bind credentials
       - address: smsc1.carrier-a.com:2775
         weight: 100
       - address: smsc2.carrier-a.com:2775
@@ -304,11 +305,17 @@ upstreams:
 
   - name: carrier-b
     hosts:
-      - address: smsc.carrier-b.com:2775
+      # Or each host can have its own credentials
+      - address: smsc1.carrier-b.com:2775
+        bind:
+          system_id: ${CARRIER_B_USER_1}
+          password: ${CARRIER_B_PASS_1}
+      - address: smsc2.carrier-b.com:2775
+        bind:
+          system_id: ${CARRIER_B_USER_2}
+          password: ${CARRIER_B_PASS_2}
     bind:
-      system_id: ${CARRIER_B_USER}
-      password: ${CARRIER_B_PASS}
-      type: transceiver
+      type: transceiver  # Shared settings, credentials per-host
 
   - name: backup
     hosts:
@@ -640,6 +647,10 @@ upstreams:
       - address: smsc3.carrier-a.com:2775
         weight: 50
         priority: 2  # Lower priority = backup
+        # Per-host credentials override upstream-level bind
+        bind:
+          system_id: ${CARRIER_A_USER_3}
+          password: ${CARRIER_A_PASS_3}
 
     # Bind credentials
     bind:
