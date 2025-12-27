@@ -112,9 +112,40 @@ smppd/
 │   │   ├── server.go            # HTTP server
 │   │   ├── handlers.go          # API handlers
 │   │   └── grpc.go              # gRPC API
-│   └── metrics/                 # Observability
-│       ├── prometheus.go        # Prometheus exporter
-│       └── stats.go             # Internal stats
+│   ├── metrics/                 # Observability
+│   │   ├── prometheus.go        # Prometheus exporter
+│   │   └── stats.go             # Internal stats
+│   ├── alerting/                # Alerting rules
+│   │   ├── manager.go           # Alert rule engine
+│   │   ├── rules.go             # Rule definitions
+│   │   └── notifier/            # Notification channels
+│   │       ├── pagerduty.go     # PagerDuty integration
+│   │       ├── slack.go         # Slack integration
+│   │       └── webhook.go       # Generic webhook
+│   ├── queue/                   # Message queue integration
+│   │   ├── producer.go          # Queue producer interface
+│   │   ├── consumer.go          # Queue consumer interface
+│   │   ├── kafka/               # Kafka implementation
+│   │   ├── rabbitmq/            # RabbitMQ implementation
+│   │   ├── redis/               # Redis Streams implementation
+│   │   └── nats/                # NATS implementation
+│   ├── lua/                     # Lua scripting
+│   │   ├── vm.go                # Lua VM pool
+│   │   ├── sandbox.go           # Sandboxed execution
+│   │   └── bindings.go          # SMPP bindings for Lua
+│   ├── bridge/                  # Protocol bridge
+│   │   ├── bridge.go            # Bridge interface
+│   │   ├── http.go              # HTTP/REST bridge
+│   │   ├── grpc.go              # gRPC bridge
+│   │   └── kafka.go             # Kafka bridge
+│   ├── dlr/                     # DLR handling
+│   │   ├── harmonizer.go        # Error code harmonization
+│   │   ├── codes.go             # Carrier code mappings
+│   │   └── tracker.go           # DLR correlation
+│   └── extension/               # Extension system
+│       ├── registry.go          # Extension registry
+│       ├── recorder.go          # Traffic recorder
+│       └── replayer.go          # Traffic replayer
 ├── api/
 │   └── smppd/
 │       └── v1/
@@ -256,6 +287,150 @@ internal/cluster/sync.go
 ```
 
 **Deliverable:** HA deployment
+
+### Phase 11: Lua Scripting
+
+**Goal:** Custom routing and transformation logic via Lua
+
+```
+internal/lua/vm.go
+internal/lua/sandbox.go
+internal/lua/bindings.go
+internal/router/lua.go
+internal/filter/lua/lua.go
+```
+
+**Deliverable:** Lua scripts for routing decisions and message transforms
+
+```lua
+-- Example: route based on message content
+function route(ctx, msg)
+    if string.match(msg.short_message, "^OTP:") then
+        return "priority-cluster"
+    end
+    return "default-cluster"
+end
+```
+
+### Phase 12: DLR Harmonization
+
+**Goal:** Normalize DLR error codes across carriers
+
+```
+internal/dlr/harmonizer.go
+internal/dlr/codes.go
+internal/dlr/tracker.go
+internal/filter/dlr/dlr.go
+```
+
+**Deliverable:** Consistent DLR status regardless of carrier
+
+```yaml
+dlr_harmonization:
+  carriers:
+    vodacom:
+      "001": { state: DELIVERED, error: 0 }
+      "002": { state: UNDELIVERABLE, error: 1 }
+    mtn:
+      "DELIVRD": { state: DELIVERED, error: 0 }
+      "EXPIRED": { state: EXPIRED, error: 2 }
+```
+
+### Phase 13: Protocol Bridge
+
+**Goal:** Protocol translation (HTTP/gRPC/Kafka ↔ SMPP)
+
+```
+internal/bridge/bridge.go
+internal/bridge/http.go
+internal/bridge/grpc.go
+internal/bridge/kafka.go
+internal/listener/bridge.go
+```
+
+**Deliverable:** Send SMS via HTTP, receive MO/DLR via webhook
+
+```
+HTTP POST /v1/messages → SMPP submit_sm → Upstream
+Upstream deliver_sm → Bridge → HTTP webhook callback
+```
+
+### Phase 14: Message Queues
+
+**Goal:** Queue integration for async processing
+
+```
+internal/queue/producer.go
+internal/queue/consumer.go
+internal/queue/kafka/kafka.go
+internal/queue/rabbitmq/rabbitmq.go
+internal/queue/redis/redis.go
+internal/queue/nats/nats.go
+```
+
+**Deliverable:** Submit via queue, receive DLR/MO via queue
+
+```yaml
+queues:
+  submit:
+    type: kafka
+    brokers: [kafka:9092]
+    topic: smpp.submit
+  dlr:
+    type: kafka
+    brokers: [kafka:9092]
+    topic: smpp.dlr
+```
+
+### Phase 15: Alerting Rules
+
+**Goal:** Threshold-based alerts with notification channels
+
+```
+internal/alerting/manager.go
+internal/alerting/rules.go
+internal/alerting/notifier/pagerduty.go
+internal/alerting/notifier/slack.go
+internal/alerting/notifier/webhook.go
+```
+
+**Deliverable:** Alerts on error rates, latency, credit depletion
+
+```yaml
+alerting:
+  rules:
+    - name: high_error_rate
+      condition: error_rate > 0.05
+      for: 5m
+      notify: [slack, pagerduty]
+    - name: upstream_down
+      condition: healthy_endpoints == 0
+      notify: [pagerduty]
+```
+
+### Phase 16: Extensions (Record/Replay)
+
+**Goal:** Traffic recording and replay for testing
+
+```
+internal/extension/registry.go
+internal/extension/recorder.go
+internal/extension/replayer.go
+```
+
+**Deliverable:** Capture production traffic, replay in test
+
+```yaml
+extensions:
+  recorder:
+    enabled: true
+    output: /var/log/smppd/traffic.jsonl
+    sample_rate: 0.1  # 10% of traffic
+  replayer:
+    enabled: false
+    input: /var/log/smppd/traffic.jsonl
+    speed: 2.0  # 2x speed
+```
 
 ## Key Interfaces
 
@@ -518,3 +693,9 @@ require (
 | 8 | SMS firewall | Pending |
 | 9 | Dynamic config (MDS) | Pending |
 | 10 | Clustering | Pending |
+| 11 | Lua scripting | Pending |
+| 12 | DLR harmonization | Pending |
+| 13 | Protocol bridge | Pending |
+| 14 | Message queues | Pending |
+| 15 | Alerting rules | Pending |
+| 16 | Record/Replay extensions | Pending |
