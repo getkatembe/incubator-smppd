@@ -1506,6 +1506,583 @@ WantedBy=multi-user.target
 
 ---
 
+## Protocol Buffers
+
+### Service Overview
+
+```mermaid
+graph LR
+    subgraph SmppService
+        S1[Submit]
+        S2[SubmitBatch]
+        S3[Query]
+        S4[Cancel]
+    end
+
+    subgraph DeliveryService
+        D1[StreamDeliveries]
+        D2[ListDeliveries]
+        D3[GetDelivery]
+        D4[AckDelivery]
+    end
+
+    subgraph ManagementService
+        M1[GetStatus]
+        M2[ListClients]
+        M3[ListUpstreams]
+        M4[ListRoutes]
+        M5[ReloadConfig]
+    end
+```
+
+### api/smppd/v1/smppd.proto
+
+```protobuf
+syntax = "proto3";
+
+package smppd.v1;
+
+option go_package = "github.com/getkatembe/smppd/api/smppd/v1;smppd";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// =============================================================================
+// SMPP Service - Message submission and query
+// =============================================================================
+
+service SmppService {
+  // Submit a single message
+  rpc Submit(SubmitRequest) returns (SubmitResponse);
+
+  // Submit multiple messages in batch
+  rpc SubmitBatch(SubmitBatchRequest) returns (SubmitBatchResponse);
+
+  // Query message status
+  rpc Query(QueryRequest) returns (QueryResponse);
+
+  // Cancel a pending message
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Submit
+// -----------------------------------------------------------------------------
+
+message SubmitRequest {
+  // Source address (sender ID)
+  Address source = 1;
+
+  // Destination address
+  Address destination = 2;
+
+  // Message content
+  oneof content {
+    string text = 3;           // Text message (auto-encoded)
+    bytes data = 4;            // Binary data
+  }
+
+  // Data coding scheme (0=GSM7, 8=UCS2, 4=binary)
+  uint32 data_coding = 5;
+
+  // Request delivery receipt
+  RegisteredDelivery registered_delivery = 6;
+
+  // Validity period
+  google.protobuf.Duration validity_period = 7;
+
+  // Scheduled delivery time
+  google.protobuf.Timestamp scheduled_time = 8;
+
+  // Service type
+  string service_type = 9;
+
+  // Protocol ID
+  uint32 protocol_id = 10;
+
+  // Priority flag (0-3)
+  uint32 priority = 11;
+
+  // Optional TLVs
+  repeated TLV tlvs = 12;
+
+  // Client reference (for correlation)
+  string client_ref = 13;
+
+  // Force specific upstream
+  string upstream = 14;
+}
+
+message SubmitResponse {
+  // Message ID assigned by SMSC
+  string message_id = 1;
+
+  // Internal tracking ID
+  string tracking_id = 2;
+
+  // Number of parts (for multipart)
+  uint32 parts = 3;
+
+  // Part message IDs (for multipart)
+  repeated string part_message_ids = 4;
+
+  // Upstream used
+  string upstream = 5;
+}
+
+// -----------------------------------------------------------------------------
+// Submit Batch
+// -----------------------------------------------------------------------------
+
+message SubmitBatchRequest {
+  // Common settings for all messages
+  Address source = 1;
+  uint32 data_coding = 2;
+  RegisteredDelivery registered_delivery = 3;
+  string service_type = 4;
+
+  // Individual messages
+  repeated BatchMessage messages = 5;
+}
+
+message BatchMessage {
+  Address destination = 1;
+  string text = 2;
+  string client_ref = 3;
+}
+
+message SubmitBatchResponse {
+  // Results for each message
+  repeated BatchResult results = 1;
+
+  // Summary
+  uint32 total = 2;
+  uint32 accepted = 3;
+  uint32 rejected = 4;
+}
+
+message BatchResult {
+  uint32 index = 1;
+  bool success = 2;
+  string message_id = 3;
+  string tracking_id = 4;
+  string error = 5;
+  uint32 error_code = 6;
+}
+
+// -----------------------------------------------------------------------------
+// Query
+// -----------------------------------------------------------------------------
+
+message QueryRequest {
+  // Query by message ID
+  string message_id = 1;
+
+  // Or query by tracking ID
+  string tracking_id = 2;
+}
+
+message QueryResponse {
+  string message_id = 1;
+  string tracking_id = 2;
+  MessageState state = 3;
+  string error = 4;
+  google.protobuf.Timestamp submit_time = 5;
+  google.protobuf.Timestamp done_time = 6;
+}
+
+// -----------------------------------------------------------------------------
+// Cancel
+// -----------------------------------------------------------------------------
+
+message CancelRequest {
+  string message_id = 1;
+  Address source = 2;
+  Address destination = 3;
+}
+
+message CancelResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// =============================================================================
+// Delivery Service - MO and DLR handling
+// =============================================================================
+
+service DeliveryService {
+  // Stream incoming deliveries (MO + DLR)
+  rpc StreamDeliveries(StreamDeliveriesRequest) returns (stream Delivery);
+
+  // List stored deliveries
+  rpc ListDeliveries(ListDeliveriesRequest) returns (ListDeliveriesResponse);
+
+  // Get a specific delivery
+  rpc GetDelivery(GetDeliveryRequest) returns (Delivery);
+
+  // Acknowledge delivery (remove from pending)
+  rpc AckDelivery(AckDeliveryRequest) returns (AckDeliveryResponse);
+}
+
+message StreamDeliveriesRequest {
+  // Filter by type
+  DeliveryType type = 1;  // ALL, MO, DLR
+
+  // Filter by client
+  string client = 2;
+
+  // Auto-acknowledge on receive
+  bool auto_ack = 3;
+}
+
+message Delivery {
+  // Unique ID
+  string id = 1;
+
+  // Type: MO or DLR
+  DeliveryType type = 2;
+
+  // Source address
+  Address source = 3;
+
+  // Destination address
+  Address destination = 4;
+
+  // Message content (for MO)
+  string text = 5;
+  bytes data = 6;
+  uint32 data_coding = 7;
+
+  // DLR fields
+  string message_id = 8;         // Original message ID
+  MessageState state = 9;        // Delivery state
+  string error = 10;             // Error description
+  uint32 error_code = 11;        // SMPP error code
+
+  // Timestamps
+  google.protobuf.Timestamp received_at = 12;
+  google.protobuf.Timestamp submit_time = 13;    // For DLR
+  google.protobuf.Timestamp done_time = 14;      // For DLR
+
+  // TLVs
+  repeated TLV tlvs = 15;
+
+  // Metadata
+  string upstream = 16;
+  string client = 17;
+}
+
+message ListDeliveriesRequest {
+  DeliveryType type = 1;
+  string client = 2;
+  google.protobuf.Timestamp from = 3;
+  google.protobuf.Timestamp to = 4;
+  uint32 limit = 5;
+  string cursor = 6;
+}
+
+message ListDeliveriesResponse {
+  repeated Delivery deliveries = 1;
+  string next_cursor = 2;
+  uint32 total = 3;
+}
+
+message GetDeliveryRequest {
+  string id = 1;
+}
+
+message AckDeliveryRequest {
+  repeated string ids = 1;
+}
+
+message AckDeliveryResponse {
+  uint32 acknowledged = 1;
+}
+
+// =============================================================================
+// Management Service - Status and control
+// =============================================================================
+
+service ManagementService {
+  // Get daemon status
+  rpc GetStatus(GetStatusRequest) returns (StatusResponse);
+
+  // List connected clients
+  rpc ListClients(ListClientsRequest) returns (ListClientsResponse);
+
+  // Disconnect a client
+  rpc DisconnectClient(DisconnectClientRequest) returns (DisconnectClientResponse);
+
+  // List upstreams
+  rpc ListUpstreams(ListUpstreamsRequest) returns (ListUpstreamsResponse);
+
+  // Control upstream
+  rpc ControlUpstream(ControlUpstreamRequest) returns (ControlUpstreamResponse);
+
+  // List routes
+  rpc ListRoutes(ListRoutesRequest) returns (ListRoutesResponse);
+
+  // Test route matching
+  rpc TestRoute(TestRouteRequest) returns (TestRouteResponse);
+
+  // Reload configuration
+  rpc ReloadConfig(ReloadConfigRequest) returns (ReloadConfigResponse);
+
+  // Get metrics
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
+}
+
+// -----------------------------------------------------------------------------
+// Status
+// -----------------------------------------------------------------------------
+
+message GetStatusRequest {}
+
+message StatusResponse {
+  string version = 1;
+  string node_id = 2;
+  google.protobuf.Timestamp started_at = 3;
+  google.protobuf.Duration uptime = 4;
+
+  // Listeners
+  repeated ListenerStatus listeners = 5;
+
+  // Upstreams
+  repeated UpstreamStatus upstreams = 6;
+
+  // Counts
+  uint64 total_submitted = 7;
+  uint64 total_delivered = 8;
+  uint64 total_failed = 9;
+  uint32 active_connections = 10;
+}
+
+message ListenerStatus {
+  string name = 1;
+  string type = 2;
+  string address = 3;
+  bool tls = 4;
+  uint32 connections = 5;
+}
+
+message UpstreamStatus {
+  string name = 1;
+  HealthState health = 2;
+  uint32 active_connections = 3;
+  uint32 pool_size = 4;
+  uint64 messages_sent = 5;
+  uint64 messages_failed = 6;
+  google.protobuf.Duration avg_latency = 7;
+}
+
+// -----------------------------------------------------------------------------
+// Clients
+// -----------------------------------------------------------------------------
+
+message ListClientsRequest {}
+
+message ListClientsResponse {
+  repeated ClientInfo clients = 1;
+}
+
+message ClientInfo {
+  string system_id = 1;
+  string bind_type = 2;
+  string remote_addr = 3;
+  string listener = 4;
+  google.protobuf.Timestamp connected_at = 5;
+  uint64 messages_submitted = 6;
+  uint64 messages_delivered = 7;
+  uint32 window_size = 8;
+  uint32 window_used = 9;
+}
+
+message DisconnectClientRequest {
+  string system_id = 1;
+  string reason = 2;
+}
+
+message DisconnectClientResponse {
+  uint32 disconnected = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Upstreams
+// -----------------------------------------------------------------------------
+
+message ListUpstreamsRequest {}
+
+message ListUpstreamsResponse {
+  repeated UpstreamInfo upstreams = 1;
+}
+
+message UpstreamInfo {
+  string name = 1;
+  HealthState health = 2;
+  bool suspended = 3;
+  repeated HostInfo hosts = 4;
+  UpstreamStats stats = 5;
+}
+
+message HostInfo {
+  string address = 1;
+  HealthState health = 2;
+  uint32 weight = 3;
+  uint32 priority = 4;
+  uint32 active_connections = 5;
+}
+
+message UpstreamStats {
+  uint64 messages_sent = 1;
+  uint64 messages_failed = 2;
+  uint64 messages_throttled = 3;
+  google.protobuf.Duration avg_latency = 4;
+  google.protobuf.Duration p99_latency = 5;
+}
+
+message ControlUpstreamRequest {
+  string name = 1;
+  UpstreamAction action = 2;
+}
+
+enum UpstreamAction {
+  UPSTREAM_ACTION_UNSPECIFIED = 0;
+  UPSTREAM_ACTION_SUSPEND = 1;
+  UPSTREAM_ACTION_RESUME = 2;
+  UPSTREAM_ACTION_RECONNECT = 3;
+}
+
+message ControlUpstreamResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Routes
+// -----------------------------------------------------------------------------
+
+message ListRoutesRequest {}
+
+message ListRoutesResponse {
+  repeated RouteInfo routes = 1;
+}
+
+message RouteInfo {
+  string name = 1;
+  uint32 priority = 2;
+  string match_expr = 3;
+  string upstream = 4;
+  string failover = 5;
+  uint64 messages_routed = 6;
+}
+
+message TestRouteRequest {
+  string destination_addr = 1;
+  string source_addr = 2;
+  string client = 3;
+  string service_type = 4;
+}
+
+message TestRouteResponse {
+  string matched_route = 1;
+  string upstream = 2;
+  string failover = 3;
+}
+
+// -----------------------------------------------------------------------------
+// Config
+// -----------------------------------------------------------------------------
+
+message ReloadConfigRequest {
+  bool validate_only = 1;
+}
+
+message ReloadConfigResponse {
+  bool success = 1;
+  repeated string errors = 2;
+  repeated string warnings = 3;
+}
+
+// -----------------------------------------------------------------------------
+// Metrics
+// -----------------------------------------------------------------------------
+
+message GetMetricsRequest {
+  string format = 1;  // prometheus, json
+}
+
+message GetMetricsResponse {
+  string content_type = 1;
+  bytes data = 2;
+}
+
+// =============================================================================
+// Common Types
+// =============================================================================
+
+message Address {
+  string addr = 1;
+  uint32 ton = 2;   // Type of Number
+  uint32 npi = 3;   // Numbering Plan Indicator
+}
+
+message TLV {
+  uint32 tag = 1;
+  bytes value = 2;
+}
+
+enum RegisteredDelivery {
+  REGISTERED_DELIVERY_NONE = 0;
+  REGISTERED_DELIVERY_SUCCESS = 1;
+  REGISTERED_DELIVERY_FAILURE = 2;
+  REGISTERED_DELIVERY_BOTH = 3;
+}
+
+enum MessageState {
+  MESSAGE_STATE_UNKNOWN = 0;
+  MESSAGE_STATE_ENROUTE = 1;
+  MESSAGE_STATE_DELIVERED = 2;
+  MESSAGE_STATE_EXPIRED = 3;
+  MESSAGE_STATE_DELETED = 4;
+  MESSAGE_STATE_UNDELIVERABLE = 5;
+  MESSAGE_STATE_ACCEPTED = 6;
+  MESSAGE_STATE_REJECTED = 7;
+  MESSAGE_STATE_SKIPPED = 8;
+}
+
+enum DeliveryType {
+  DELIVERY_TYPE_ALL = 0;
+  DELIVERY_TYPE_MO = 1;
+  DELIVERY_TYPE_DLR = 2;
+}
+
+enum HealthState {
+  HEALTH_STATE_UNKNOWN = 0;
+  HEALTH_STATE_HEALTHY = 1;
+  HEALTH_STATE_DEGRADED = 2;
+  HEALTH_STATE_UNHEALTHY = 3;
+}
+```
+
+### buf.yaml
+
+```yaml
+version: v2
+modules:
+  - path: api
+    name: buf.build/getkatembe/smppd
+deps:
+  - buf.build/googleapis/googleapis
+lint:
+  use:
+    - DEFAULT
+breaking:
+  use:
+    - FILE
+```
+
+---
+
 ## Package Structure
 
 ### Module Dependencies
