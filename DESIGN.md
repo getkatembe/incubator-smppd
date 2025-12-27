@@ -339,11 +339,13 @@ clients:
   - system_id: client-a
     password: ${CLIENT_A_PASS}
     allowed_ips: ["192.168.1.0/24"]
-    rate_limit: 1000
+    rate_limit:
+      messages_per_second: 1000
 
   - system_id: client-b
     password: ${CLIENT_B_PASS}
-    rate_limit: 500
+    rate_limit:
+      messages_per_second: 500
 ```
 
 ---
