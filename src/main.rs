@@ -30,10 +30,10 @@ async fn main() -> Result<()> {
     // Initialize tracing with config-based settings
     let tracing_config = TracingConfig {
         service_name: "smppd".to_string(),
-        log_level: config.settings.log_level.clone(),
-        json_logs: config.settings.json_logs,
-        otlp_endpoint: config.settings.otlp_endpoint.clone(),
-        sample_rate: config.settings.trace_sample_rate,
+        log_level: config.telemetry.log_level.clone(),
+        json_logs: config.telemetry.json_logs,
+        otlp_endpoint: config.telemetry.otlp_endpoint.clone(),
+        sample_rate: config.telemetry.trace_sample_rate,
     };
 
     init_tracing(&tracing_config)?;
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
     }
 
     // Create and run server
-    let server = Server::new(config, args.config)?;
+    let server = Server::new(config, args.config).await?;
     server.run().await?;
 
     Ok(())

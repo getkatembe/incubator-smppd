@@ -602,14 +602,14 @@ async fn submit_handler(
 | Phase | Milestone | Status |
 |-------|-----------|--------|
 | 1 | smppd starts with config | ✅ Done |
-| 2 | SMPP listener (smpp-rs) | Pending |
-| 3 | Upstream connections | Pending |
-| 4 | Multi-carrier routing | Pending |
-| 5 | Tower filter chain | Pending |
-| 6 | Mock responses | Pending |
-| 7 | Admin API (axum) | Pending |
-| 8 | Credit control | Pending |
-| 9 | SMS firewall | Pending |
+| 2 | SMPP listener (smpp-rs) | ✅ Done |
+| 3 | Upstream connections | ✅ Done |
+| 4 | Multi-carrier routing | ✅ Done |
+| 5 | Tower filter chain | ✅ Done |
+| 6 | Mock responses | ✅ Done |
+| 7 | Admin API (axum) | ✅ Done |
+| 8 | Credit control | Skipped |
+| 9 | SMS firewall | ✅ Done |
 | 10 | MDS dynamic config | Pending |
 | 11 | Clustering | Pending |
 | 12 | Lua scripting | Pending |

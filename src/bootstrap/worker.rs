@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::thread;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Builder;
 use tracing::{info, error, span, Level};
 
-use super::shutdown::ShutdownManager;
+use super::shutdown::Shutdown;
 
 /// Worker thread configuration
 #[derive(Debug, Clone)]
@@ -32,7 +32,6 @@ impl Default for WorkerConfig {
 pub struct Worker {
     id: usize,
     handle: Option<thread::JoinHandle<()>>,
-    runtime: Option<Runtime>,
 }
 
 impl Worker {
@@ -40,7 +39,7 @@ impl Worker {
     pub fn spawn(
         id: usize,
         config: &WorkerConfig,
-        shutdown: Arc<ShutdownManager>,
+        shutdown: Arc<Shutdown>,
     ) -> Self {
         let name = format!("{}-{}", config.name_prefix, id);
         let stack_size = config.stack_size;
@@ -91,7 +90,6 @@ impl Worker {
         Self {
             id,
             handle: Some(handle),
-            runtime: None,
         }
     }
 
@@ -110,15 +108,14 @@ impl Worker {
     }
 }
 
-/// Worker pool (Envoy-style worker threads)
-pub struct WorkerPool {
-    workers: Vec<Worker>,
-    config: WorkerConfig,
+/// Worker threads (Envoy-style)
+pub struct Workers {
+    inner: Vec<Worker>,
 }
 
-impl WorkerPool {
-    /// Create a new worker pool
-    pub fn new(config: WorkerConfig, shutdown: Arc<ShutdownManager>) -> Self {
+impl Workers {
+    /// Create workers from config
+    pub fn new(config: WorkerConfig, shutdown: Arc<Shutdown>) -> Self {
         let num_workers = if config.workers == 0 {
             num_cpus::get()
         } else {
@@ -127,38 +124,38 @@ impl WorkerPool {
 
         info!(workers = num_workers, "starting worker pool");
 
-        let workers: Vec<Worker> = (0..num_workers)
+        let inner: Vec<Worker> = (0..num_workers)
             .map(|id| Worker::spawn(id, &config, shutdown.clone()))
             .collect();
 
-        info!(workers = workers.len(), "worker pool started");
+        info!(count = inner.len(), "workers started");
 
-        Self { workers, config }
+        Self { inner }
     }
 
     /// Get number of workers
     pub fn len(&self) -> usize {
-        self.workers.len()
+        self.inner.len()
     }
 
     /// Check if empty
     pub fn is_empty(&self) -> bool {
-        self.workers.is_empty()
+        self.inner.is_empty()
     }
 
     /// Shutdown all workers
     pub fn shutdown(&mut self) {
-        info!(workers = self.workers.len(), "shutting down worker pool");
+        info!(count = self.inner.len(), "shutting down workers");
 
-        for worker in &mut self.workers {
+        for worker in &mut self.inner {
             worker.join();
         }
 
-        info!("worker pool stopped");
+        info!("workers stopped");
     }
 }
 
-impl Drop for WorkerPool {
+impl Drop for Workers {
     fn drop(&mut self) {
         self.shutdown();
     }

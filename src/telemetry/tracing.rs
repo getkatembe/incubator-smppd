@@ -40,7 +40,7 @@ impl Default for TracingConfig {
         Self {
             service_name: "smppd".to_string(),
             log_level: "info".to_string(),
-            json_logs: false,
+            json_logs: true, // JSON is default for structured logging
             otlp_endpoint: None,
             sample_rate: 1.0,
         }
@@ -55,13 +55,15 @@ pub fn init_tracing(config: &TracingConfig) -> Result<()> {
     // Base subscriber with formatting layer
     let subscriber = tracing_subscriber::registry().with(env_filter);
 
-    // Add format layer (JSON or pretty)
+    // Add format layer (JSON or compact)
     if config.json_logs {
         let fmt_layer = fmt::layer()
             .json()
             .with_span_events(FmtSpan::CLOSE)
             .with_current_span(true)
-            .with_target(true);
+            .with_target(true)
+            .with_file(false)
+            .with_line_number(false);
 
         if let Some(ref endpoint) = config.otlp_endpoint {
             // With OTEL
@@ -72,10 +74,13 @@ pub fn init_tracing(config: &TracingConfig) -> Result<()> {
             subscriber.with(fmt_layer).init();
         }
     } else {
+        // Compact structured output without file/line info
         let fmt_layer = fmt::layer()
-            .pretty()
+            .compact()
             .with_span_events(FmtSpan::CLOSE)
-            .with_target(true);
+            .with_target(true)
+            .with_file(false)
+            .with_line_number(false);
 
         if let Some(ref endpoint) = config.otlp_endpoint {
             // With OTEL

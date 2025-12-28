@@ -17,12 +17,13 @@ listeners:
         config:
           requests_per_second: 100
 
-  - name: secure
-    address: "0.0.0.0:2776"
-    protocol: smpp
-    tls:
-      cert: /etc/smppd/server.crt
-      key: /etc/smppd/server.key
+  # Uncomment when TLS certs are available
+  # - name: secure
+  #   address: "0.0.0.0:2776"
+  #   protocol: smpp
+  #   tls:
+  #     cert: /etc/smppd/server.crt
+  #     key: /etc/smppd/server.key
 
 # Clusters define upstream SMSC groups
 clusters:
@@ -63,25 +64,25 @@ clusters:
 # Routes determine which cluster handles each message
 routes:
   - name: vodacom-route
-    match_:
+    match:
       prefix: "+25884"
     cluster: vodacom
     priority: 1
 
   - name: mtn-route
-    match_:
+    match:
       prefix: "+25882"
     cluster: mtn
     priority: 1
 
   - name: test-route
-    match_:
+    match:
       prefix: "+25800"
     cluster: mock
     priority: 1
 
   - name: default-route
-    match_:
+    match:
       prefix: ""
     cluster: vodacom
     priority: 100
@@ -94,12 +95,16 @@ admin:
 
 # Global settings
 settings:
-  workers: 0  # 0 = auto-detect
-  json_logs: false
-  log_level: info
-  hot_reload: true
-  # otlp_endpoint: "http://localhost:4317"  # Uncomment for OTEL
-  trace_sample_rate: 1.0
   shutdown:
     drain_timeout: 30s
     parent_shutdown_timeout: 60s
+
+# Telemetry configuration
+telemetry:
+  workers: 0  # 0 = num_cpus
+  worker_stack_size: 2097152  # 2MB
+  event_bus_capacity: 1024
+  json_logs: true   # JSON structured logs for production
+  log_level: info
+  # otlp_endpoint: "http://localhost:4317"  # Uncomment for OTEL
+  trace_sample_rate: 1.0

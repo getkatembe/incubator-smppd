@@ -1,3 +1,11 @@
+pub mod admin;
 pub mod bootstrap;
+pub mod cluster;
 pub mod config;
+pub mod feedback;
+pub mod filter;
+pub mod forwarder;
+pub mod listener;
+pub mod router;
+pub mod store;
 pub mod telemetry;

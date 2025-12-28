@@ -1,6 +1,7 @@
-mod loader;
+pub mod loader;
+pub mod store;
 mod types;
-mod watcher;
 
+pub use loader::Format;
+pub use store::{ConfigError, ConfigStore, FileConfigStore, MemoryConfigStore};
 pub use types::*;
-pub use watcher::*;
