@@ -1,0 +1,264 @@
+# Enterprise SMS Firewall Configuration
+# Simplified rule engine for smppd
+#
+# This configuration demonstrates the full capabilities of the firewall:
+# - Chains and Rules (no tables layer)
+# - Composable conditions (And, Or, Not)
+# - Rate limiting, time-based rules
+# - Content inspection, regex matching
+# - External lists for dynamic rules
+# - Multiple action types
+
+firewall:
+  enabled: true
+  default_policy: accept
+
+  # External lists for dynamic rule matching
+  lists:
+    # Blocked sender IDs (loaded from file)
+    blocked_senders:
+      type: file
+      path: /etc/smppd/lists/blocked_senders.txt
+      reload_interval: 60s
+
+    # Blocked destination prefixes (premium rate numbers)
+    premium_prefixes:
+      type: file
+      path: /etc/smppd/lists/premium_prefixes.txt
+      reload_interval: 5m
+
+    # Spam keywords
+    spam_keywords:
+      type: file
+      path: /etc/smppd/lists/spam_keywords.txt
+      reload_interval: 1m
+
+    # VIP sender IDs (bypass rate limits)
+    vip_senders:
+      type: file
+      path: /etc/smppd/lists/vip_senders.txt
+      reload_interval: 30s
+
+    # Trusted IP ranges
+    trusted_ips:
+      type: file
+      path: /etc/smppd/lists/trusted_ips.txt
+      reload_interval: 5m
+
+  # Chains (evaluated in priority order - lower priority first)
+  chains:
+    # Main input chain - processes incoming messages
+    - name: input
+      type: input
+      priority: 0
+      policy: accept
+      rules:
+        # ===========================================
+        # Security Rules (highest priority)
+        # ===========================================
+
+        # Block messages from blocked sender IDs
+        - name: block_bad_senders
+          conditions:
+            - type: sender_id
+              match: list
+              list: blocked_senders
+          action:
+            type: drop
+
+        # Block messages to premium rate numbers
+        - name: block_premium_destinations
+          conditions:
+            - type: destination
+              match: list
+              list: premium_prefixes
+          action:
+            type: reject
+            status: 88  # ESME_RINVDSTADR
+            reason: Premium rate numbers not allowed
+
+        # Require TLS for specific system IDs
+        - name: require_tls_for_banks
+          conditions:
+            - type: and
+              conditions:
+                - type: system_id
+                  match: regex
+                  pattern: "^BANK_.*"
+                - type: tls_enabled
+                  value: false
+          action:
+            type: reject
+            status: 8
+            reason: TLS required for bank connections
+
+        # ===========================================
+        # Rate Limiting Rules
+        # ===========================================
+
+        # Global rate limit per system ID (1000 msg/sec)
+        - name: rate_limit_global
+          conditions:
+            - type: not
+              condition:
+                type: sender_id
+                match: list
+                list: vip_senders
+            - type: rate
+              key: system_id
+              window: 1s
+              threshold: 1000
+          action:
+            type: reject
+            status: 88  # ESME_RTHROTTLED
+            reason: Rate limit exceeded
+
+        # Stricter rate limit for untrusted IPs
+        - name: rate_limit_untrusted
+          conditions:
+            - type: not
+              condition:
+                type: client_ip
+                match: list
+                list: trusted_ips
+            - type: rate
+              key: client_ip
+              window: 1s
+              threshold: 100
+          action:
+            type: reject
+            status: 88
+            reason: Rate limit for untrusted IP
+
+        # ===========================================
+        # Content Filtering Rules
+        # ===========================================
+
+        # Block spam keywords
+        - name: block_spam_keywords
+          conditions:
+            - type: content
+              match: keywords
+              list: spam_keywords
+              case_insensitive: true
+          action:
+            type: log
+            level: warn
+            message: "Spam detected"
+            then:
+              type: drop
+
+        # Block messages with suspicious URL patterns
+        - name: block_phishing_urls
+          conditions:
+            - type: content
+              match: regex
+              pattern: "https?://[a-z0-9]+\\.(tk|ga|ml|cf|gq)/[a-z0-9]+"
+              case_insensitive: true
+          action:
+            type: quarantine
+
+        # Block excessively long messages
+        - name: max_message_length
+          conditions:
+            - type: content_length
+              max: 1600
+              negate: true
+          action:
+            type: reject
+            status: 1  # ESME_RINVMSGLEN
+            reason: Message too long
+
+        # ===========================================
+        # Time-based Rules
+        # ===========================================
+
+        # Stricter limits during night hours (Africa/Maputo timezone)
+        - name: night_rate_limit
+          conditions:
+            - type: time
+              start: "22:00"
+              end: "06:00"
+              timezone: Africa/Maputo
+            - type: rate
+              key: system_id
+              window: 1m
+              threshold: 100
+          action:
+            type: reject
+            status: 88
+            reason: Reduced rate limit during night hours
+
+        # Block marketing messages on weekends
+        - name: no_marketing_weekends
+          conditions:
+            - type: day_of_week
+              days: [0, 6]  # Sunday, Saturday
+            - type: content
+              match: contains
+              value: "PROMO"
+              case_insensitive: true
+          action:
+            type: reject
+            status: 8
+            reason: Marketing messages not allowed on weekends
+
+        # ===========================================
+        # Protocol-specific Rules
+        # ===========================================
+
+        # Log all flash messages
+        - name: log_flash_messages
+          conditions:
+            - type: esm_class
+              value: 0x10  # Flash message
+              mask: 0x18
+          action:
+            type: log
+            level: info
+            message: "Flash message detected"
+
+        # Block binary messages from unknown senders
+        - name: block_binary_unknown
+          conditions:
+            - type: data_coding
+              value: 4  # Binary
+            - type: not
+              condition:
+                type: sender_id
+                match: list
+                list: vip_senders
+          action:
+            type: reject
+            status: 8
+            reason: Binary messages require authorization
+
+    # Audit chain - runs after main input chain
+    - name: audit
+      type: input
+      priority: 100  # Run after main input chain
+      policy: accept
+      rules:
+        # Log all international messages
+        - name: log_international
+          conditions:
+            - type: not
+              condition:
+                type: destination
+                match: prefix
+                value: "+258"  # Mozambique prefix
+          action:
+            type: log
+            level: info
+            message: "International message"
+
+        # Mark high-value destinations for billing
+        - name: mark_premium
+          conditions:
+            - type: destination
+              match: prefix
+              value: "+258900"  # Premium prefix
+          action:
+            type: mark
+            key: billing_type
+            value: premium

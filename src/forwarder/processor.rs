@@ -150,7 +150,7 @@ impl MessageForwarder {
         let message_id = stored.id;
         let message_id_str = message_id.to_string();
 
-        state.store.store(stored);
+        state.storage.store(stored);
         debug!(message_id = %message_id, "message stored");
 
         // Step 2: Route the message
@@ -158,7 +158,7 @@ impl MessageForwarder {
             Some(result) => result,
             None => {
                 warn!(dest = %dest_addr, "no route found");
-                state.store.update(
+                state.storage.update(
                     message_id,
                     Box::new(|m| m.mark_failed(Some(0x0000000B), "no route found")),
                 );
@@ -181,7 +181,7 @@ impl MessageForwarder {
             route_result.fallback.clone(),
             route_ctx,
         );
-        let route_decision_id = state.feedback.record_decision(route_decision);
+        let route_decision_id = state.storage.record_decision(route_decision);
 
         debug!(
             message_id = %message_id,
@@ -217,13 +217,13 @@ impl MessageForwarder {
                     // Update store with upstream ID and mark in-flight
                     let cluster_for_update = cluster_name.clone();
                     let upstream_for_update = upstream_id.clone();
-                    state.store.update(message_id, Box::new(move |m| {
+                    state.storage.update(message_id, Box::new(move |m| {
                         m.smsc_message_id = Some(upstream_for_update);
                         m.mark_in_flight(&cluster_for_update, "upstream");
                     }));
 
                     // Record success in feedback
-                    state.feedback.record_outcome(Outcome::success(route_decision_id, latency));
+                    state.storage.record_outcome(Outcome::success(route_decision_id, latency));
                     counters::message_forwarded();
 
                     let _ = request.response_tx.send(ForwardResult::success(message_id_str));
@@ -255,7 +255,7 @@ impl MessageForwarder {
             .unwrap_or_else(|| "all clusters failed".to_string());
 
         // Record failure in feedback
-        state.feedback.record_outcome(Outcome::failure(
+        state.storage.record_outcome(Outcome::failure(
             route_decision_id,
             start.elapsed(),
             Some(0x00000058),
@@ -263,7 +263,7 @@ impl MessageForwarder {
         ));
 
         // Check if retriable
-        let can_retry = state.store
+        let can_retry = state.storage
             .get(message_id)
             .map(|m| m.can_retry())
             .unwrap_or(false);
@@ -271,11 +271,11 @@ impl MessageForwarder {
         if can_retry {
             // Schedule retry with backoff
             let retry_delay = Duration::from_secs(1);
-            state.store.update(message_id, Box::new(move |m| {
+            state.storage.update(message_id, Box::new(move |m| {
                 m.mark_retry(retry_delay, Some(0x00000058), &error_msg);
             }));
         } else {
-            state.store.update(message_id, Box::new(move |m| {
+            state.storage.update(message_id, Box::new(move |m| {
                 m.mark_failed(Some(0x00000058), &error_msg);
             }));
         }
@@ -314,7 +314,7 @@ impl MessageForwarder {
         // Record response in store
         let cmd_status = resp.0;
         let msg_id = resp.1.clone();
-        state.store.update(message_id, Box::new(move |m| {
+        state.storage.update(message_id, Box::new(move |m| {
             m.record_response(cmd_status, Some(msg_id), 0);
         }));
 

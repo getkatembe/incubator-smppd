@@ -18,6 +18,10 @@ pub struct Config {
     #[serde(default)]
     pub routes: Vec<RouteConfig>,
 
+    /// Client credentials for ESME authentication
+    #[serde(default)]
+    pub clients: Vec<ClientConfig>,
+
     /// Admin API configuration
     #[serde(default)]
     pub admin: AdminConfig,
@@ -29,6 +33,57 @@ pub struct Config {
     /// Telemetry configuration (workers, metrics, tracing)
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+}
+
+/// Client (ESME) configuration for authentication
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientConfig {
+    /// System ID (username)
+    pub system_id: String,
+
+    /// Password
+    pub password: String,
+
+    /// Optional system type
+    #[serde(default)]
+    pub system_type: Option<String>,
+
+    /// Allowed bind types (transmitter, receiver, transceiver)
+    #[serde(default)]
+    pub allowed_bind_types: Vec<BindType>,
+
+    /// Allowed source addresses/sender IDs
+    #[serde(default)]
+    pub allowed_sources: Vec<String>,
+
+    /// Allowed IP addresses/ranges (CIDR notation)
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+
+    /// Maximum concurrent connections
+    #[serde(default)]
+    pub max_connections: Option<usize>,
+
+    /// Rate limit (messages per second)
+    #[serde(default)]
+    pub rate_limit: Option<u32>,
+
+    /// Whether this client is enabled
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// Bind type for SMPP connections
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindType {
+    Transmitter,
+    Receiver,
+    Transceiver,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Listener configuration
@@ -543,16 +598,175 @@ fn default_admin_address() -> SocketAddr {
     "0.0.0.0:9090".parse().unwrap()
 }
 
-fn default_true() -> bool {
-    true
-}
-
 /// Global settings
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// Shutdown configuration
     #[serde(default)]
     pub shutdown: ShutdownConfig,
+
+    /// Message store configuration
+    #[serde(default)]
+    pub store: StoreConfig,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            shutdown: ShutdownConfig::default(),
+            store: StoreConfig::default(),
+        }
+    }
+}
+
+/// Storage backend type.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageBackend {
+    /// In-memory storage (volatile, for testing)
+    Memory,
+    /// Fjall (pure Rust LSM-tree, default for production)
+    #[default]
+    Fjall,
+}
+
+/// Message store configuration with polymorphic backend configs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreConfig {
+    /// Storage backend type
+    #[serde(default)]
+    pub backend: StorageBackend,
+
+    /// In-memory store configuration (used when backend = memory)
+    #[serde(default)]
+    pub memory: MemoryStoreConfig,
+
+    /// Fjall store configuration (used when backend = fjall)
+    #[serde(default)]
+    pub fjall: FjallStoreConfig,
+}
+
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            backend: StorageBackend::default(),
+            memory: MemoryStoreConfig::default(),
+            fjall: FjallStoreConfig::default(),
+        }
+    }
+}
+
+impl StoreConfig {
+    /// Get the backend name for logging.
+    pub fn backend_name(&self) -> &'static str {
+        match self.backend {
+            StorageBackend::Memory => "memory",
+            StorageBackend::Fjall => "fjall",
+        }
+    }
+
+    /// Create in-memory store config for testing.
+    pub fn memory() -> Self {
+        Self {
+            backend: StorageBackend::Memory,
+            ..Default::default()
+        }
+    }
+
+    /// Create fjall store config with defaults.
+    pub fn fjall() -> Self {
+        Self {
+            backend: StorageBackend::Fjall,
+            ..Default::default()
+        }
+    }
+}
+
+/// In-memory store configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryStoreConfig {
+    /// Maximum number of messages to keep in store.
+    #[serde(default = "default_max_messages")]
+    pub max_messages: usize,
+
+    /// Maximum memory usage in megabytes (approximate).
+    #[serde(default = "default_max_memory_mb")]
+    pub max_memory_mb: usize,
+
+    /// Percentage of messages to prune when at capacity (1-50).
+    #[serde(default = "default_prune_percent")]
+    pub prune_percent: u8,
+}
+
+impl Default for MemoryStoreConfig {
+    fn default() -> Self {
+        Self {
+            max_messages: default_max_messages(),
+            max_memory_mb: default_max_memory_mb(),
+            prune_percent: default_prune_percent(),
+        }
+    }
+}
+
+fn default_max_memory_mb() -> usize {
+    512
+}
+
+/// Fjall (LSM-tree) store configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FjallStoreConfig {
+    /// Data directory path. If not set or "./data", uses XDG/FHS defaults.
+    #[serde(default)]
+    pub path: Option<std::path::PathBuf>,
+
+    /// Maximum number of messages to keep in store.
+    #[serde(default = "default_max_messages")]
+    pub max_messages: usize,
+
+    /// Block cache size in megabytes.
+    #[serde(default = "default_block_cache_mb")]
+    pub block_cache_mb: usize,
+
+    /// Write buffer size in megabytes.
+    #[serde(default = "default_write_buffer_mb")]
+    pub write_buffer_mb: usize,
+
+    /// Enable fsync on each write (slower but safer).
+    #[serde(default)]
+    pub fsync: bool,
+
+    /// Compression enabled.
+    #[serde(default = "default_true")]
+    pub compression: bool,
+}
+
+impl Default for FjallStoreConfig {
+    fn default() -> Self {
+        Self {
+            path: None,
+            max_messages: default_max_messages(),
+            block_cache_mb: default_block_cache_mb(),
+            write_buffer_mb: default_write_buffer_mb(),
+            fsync: false,
+            compression: true,
+        }
+    }
+}
+
+fn default_block_cache_mb() -> usize {
+    64
+}
+
+fn default_write_buffer_mb() -> usize {
+    32
+}
+
+fn default_max_messages() -> usize {
+    1_000_000
+}
+
+fn default_prune_percent() -> u8 {
+    10
 }
 
 /// Telemetry configuration
@@ -566,9 +780,9 @@ pub struct TelemetryConfig {
     #[serde(default = "default_worker_stack_size")]
     pub worker_stack_size: usize,
 
-    /// Event bus capacity
-    #[serde(default = "default_event_bus_capacity")]
-    pub event_bus_capacity: usize,
+    /// Bus capacity
+    #[serde(default = "default_bus_capacity")]
+    pub bus_capacity: usize,
 
     /// Enable structured JSON logging
     #[serde(default)]
@@ -591,7 +805,7 @@ impl Default for TelemetryConfig {
         Self {
             workers: 0,
             worker_stack_size: default_worker_stack_size(),
-            event_bus_capacity: default_event_bus_capacity(),
+            bus_capacity: default_bus_capacity(),
             json_logs: false,
             log_level: default_log_level(),
             otlp_endpoint: None,
@@ -604,7 +818,7 @@ fn default_worker_stack_size() -> usize {
     2 * 1024 * 1024 // 2MB
 }
 
-fn default_event_bus_capacity() -> usize {
+fn default_bus_capacity() -> usize {
     1024
 }
 

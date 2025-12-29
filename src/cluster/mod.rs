@@ -164,6 +164,11 @@ impl Cluster {
     pub fn healthy_count(&self) -> usize {
         self.endpoints.iter().filter(|ep| ep.is_healthy()).count()
     }
+
+    /// Get total active connections across all endpoints.
+    pub fn active_connections(&self) -> usize {
+        self.endpoints.iter().map(|ep| ep.active_connections()).sum()
+    }
 }
 
 /// Manager for all clusters.

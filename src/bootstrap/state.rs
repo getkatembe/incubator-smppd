@@ -1,8 +1,7 @@
 //! Shared gateway state.
 //!
 //! Contains all the core components shared across the gateway:
-//! - Message store (persistence)
-//! - Feedback store (analytics)
+//! - Storage (messages + feedback)
 //! - Router (message routing)
 //! - Clusters (upstream connections)
 //! - Config (settings)
@@ -14,9 +13,8 @@ use tokio::sync::RwLock;
 
 use crate::cluster::Clusters;
 use crate::config::Config;
-use crate::feedback::{InMemoryFeedback, SharedFeedback};
 use crate::router::Router;
-use crate::store::{InMemoryStore, SharedStore};
+use crate::store::{create_storage, SharedStorage};
 
 use super::Shutdown;
 
@@ -26,10 +24,8 @@ use super::Shutdown;
 /// All fields are thread-safe and can be cloned cheaply.
 #[derive(Clone)]
 pub struct GatewayState {
-    /// Message store (persistence, store-and-forward)
-    pub store: SharedStore,
-    /// Feedback store (decision analytics)
-    pub feedback: SharedFeedback,
+    /// Unified storage (messages + feedback)
+    pub storage: SharedStorage,
     /// Router (message routing decisions)
     pub router: Arc<RwLock<Router>>,
     /// Clusters (upstream SMSC connections)
@@ -41,19 +37,12 @@ pub struct GatewayState {
 impl GatewayState {
     /// Create a new gateway state from configuration.
     pub async fn new(config: Arc<Config>, shutdown: Arc<Shutdown>) -> anyhow::Result<Self> {
-        // Create clusters
         let clusters = Arc::new(Clusters::new(&config.clusters, shutdown).await);
-
-        // Create router
         let router = Router::new(&config.routes, clusters.clone())?;
-
-        // Create stores
-        let store: SharedStore = Arc::new(InMemoryStore::new());
-        let feedback: SharedFeedback = Arc::new(InMemoryFeedback::new());
+        let storage = create_storage(&config.settings.store).await?;
 
         Ok(Self {
-            store,
-            feedback,
+            storage,
             router: Arc::new(RwLock::new(router)),
             clusters,
             config,
@@ -61,60 +50,35 @@ impl GatewayState {
     }
 
     /// Reload configuration.
-    ///
-    /// Updates router and clusters with new config.
-    /// Store and feedback are preserved across reloads.
-    pub async fn reload(&self, new_config: Arc<Config>, shutdown: Arc<Shutdown>) -> anyhow::Result<()> {
-        // Recreate clusters
+    pub async fn reload(
+        &self,
+        new_config: Arc<Config>,
+        shutdown: Arc<Shutdown>,
+    ) -> anyhow::Result<()> {
         let new_clusters = Arc::new(Clusters::new(&new_config.clusters, shutdown).await);
-
-        // Recreate router with new clusters
         let new_router = Router::new(&new_config.routes, new_clusters.clone())?;
 
-        // Update router (requires write lock)
         {
             let mut router = self.router.write().await;
             *router = new_router;
         }
-
-        // Note: clusters field is Arc, can't be mutated directly
-        // In a full implementation, you'd use Arc<RwLock<Clusters>>
-        // For now, individual endpoints handle their own reconnection
 
         Ok(())
     }
 
     /// Get store statistics.
     pub fn store_stats(&self) -> crate::store::StoreStats {
-        self.store.stats()
+        self.storage.message_stats()
     }
 
     /// Get feedback statistics for a target.
     pub fn target_stats(&self, target: &str) -> crate::feedback::TargetStats {
-        self.feedback.target_stats(target)
+        self.storage.target_stats(target)
     }
 
     /// Run periodic maintenance tasks.
-    ///
-    /// Call this from a background task:
-    /// - Expire old messages
-    /// - Prune terminal messages
-    /// - Prune old feedback data
     pub fn maintenance(&self, message_ttl: Duration, prune_age: Duration) {
-        // Expire pending messages that exceeded TTL
-        let expired = self.store.expire_old(message_ttl);
-        if expired > 0 {
-            tracing::debug!(expired, "expired old messages");
-        }
-
-        // Prune terminal messages (delivered/failed/expired)
-        let pruned = self.store.prune_terminal(prune_age);
-        if pruned > 0 {
-            tracing::debug!(pruned, "pruned terminal messages");
-        }
-
-        // Prune old feedback data
-        self.feedback.prune(prune_age);
+        self.storage.maintenance(message_ttl, prune_age);
     }
 }
 
@@ -125,8 +89,8 @@ pub type SharedGatewayState = Arc<GatewayState>;
 mod tests {
     use super::*;
     use crate::config::{
-        AdminConfig, ClusterConfig, ListenerConfig, MockConfig, Protocol,
-        RouteConfig, RouteMatch, Settings, TelemetryConfig,
+        AdminConfig, ClusterConfig, ListenerConfig, MockConfig, Protocol, RouteConfig, RouteMatch,
+        Settings, StoreConfig, TelemetryConfig,
     };
 
     fn test_config() -> Config {
@@ -170,8 +134,12 @@ mod tests {
                 priority: 0,
             }],
             admin: AdminConfig::default(),
-            settings: Settings::default(),
+            settings: Settings {
+                store: StoreConfig::memory(),
+                ..Default::default()
+            },
             telemetry: TelemetryConfig::default(),
+            clients: vec![],
         }
     }
 
@@ -185,7 +153,6 @@ mod tests {
         let shutdown = test_shutdown();
         let state = GatewayState::new(config, shutdown).await.unwrap();
 
-        // Check stores are initialized
         let stats = state.store_stats();
         assert_eq!(stats.total, 0);
     }
@@ -198,18 +165,10 @@ mod tests {
         let shutdown = test_shutdown();
         let state = GatewayState::new(config, shutdown).await.unwrap();
 
-        // Store a message
-        let msg = StoredMessage::new(
-            "SENDER",
-            "+258841234567",
-            b"Hello".to_vec(),
-            "client1",
-            1,
-        );
-        let id = state.store.store(msg);
+        let msg = StoredMessage::new("SENDER", "+258841234567", b"Hello".to_vec(), "client1", 1);
+        let id = state.storage.store(msg);
 
-        // Verify it's stored
-        let retrieved = state.store.get(id).unwrap();
+        let retrieved = state.storage.get(id).unwrap();
         assert_eq!(retrieved.destination, "+258841234567");
 
         let stats = state.store_stats();
@@ -226,15 +185,14 @@ mod tests {
         let shutdown = test_shutdown();
         let state = GatewayState::new(config, shutdown).await.unwrap();
 
-        // Record a decision
         let ctx = DecisionContext::new("+258841234567");
         let decision = Decision::route("mock", vec![], ctx);
-        let id = state.feedback.record_decision(decision);
+        let id = state.storage.record_decision(decision);
 
-        // Record outcome
-        state.feedback.record_outcome(Outcome::success(id, Duration::from_millis(50)));
+        state
+            .storage
+            .record_outcome(Outcome::success(id, Duration::from_millis(50)));
 
-        // Check target stats
         let stats = state.target_stats("mock");
         assert_eq!(stats.total, 1);
         assert_eq!(stats.successes, 1);

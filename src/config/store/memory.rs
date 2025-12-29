@@ -153,6 +153,7 @@ mod tests {
             admin: AdminConfig::default(),
             settings: Settings::default(),
             telemetry: TelemetryConfig::default(),
+            clients: vec![],
         }
     }
 
@@ -257,6 +258,7 @@ routes:
             admin: AdminConfig::default(),
             settings: Settings::default(),
             telemetry: TelemetryConfig::default(),
+            clients: vec![],
         };
 
         let result = store.update(invalid);

@@ -75,7 +75,7 @@ impl RetryProcessor {
 
     /// Process all messages ready for retry.
     async fn process_retries(&self) {
-        let store = &self.state.store;
+        let store = &self.state.storage;
 
         // Get messages in Retrying state that are ready for retry
         let ready_for_retry = store.get_ready_for_retry();
@@ -94,7 +94,7 @@ impl RetryProcessor {
     /// Retry a single message.
     async fn retry_message(&self, msg: StoredMessage) {
         let message_id = msg.id;
-        let store = &self.state.store;
+        let store = &self.state.storage;
 
         // Check if still in Retrying state (may have changed since we got the list)
         let current = match store.get(message_id) {
@@ -158,7 +158,7 @@ impl RetryProcessor {
             current.attempts + 1,
             retry_ctx,
         );
-        let retry_decision_id = self.state.feedback.record_decision(retry_decision);
+        let retry_decision_id = self.state.storage.record_decision(retry_decision);
 
         // Try to forward again
         let mut clusters_to_try = vec![route_result.cluster_name.clone()];
@@ -186,7 +186,7 @@ impl RetryProcessor {
                     }));
 
                     // Record success
-                    self.state.feedback.record_outcome(Outcome::success(retry_decision_id, start.elapsed()));
+                    self.state.storage.record_outcome(Outcome::success(retry_decision_id, start.elapsed()));
                     counters::message_retried();
                     return;
                 }
@@ -206,7 +206,7 @@ impl RetryProcessor {
         let next_delay_clone = next_delay;
 
         // Record failure
-        self.state.feedback.record_outcome(Outcome::failure(
+        self.state.storage.record_outcome(Outcome::failure(
             retry_decision_id,
             start.elapsed(),
             Some(0x00000058),

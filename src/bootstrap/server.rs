@@ -4,15 +4,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::RwLock;
-use tracing::{info, warn, error, span, Level};
+use tracing::{error, info, span, warn, Level};
 
 use crate::admin::{AdminServer, AdminState};
 use crate::config::Config;
-use crate::forwarder::{self, ForwarderConfig};
-use crate::listener::Listeners;
+use crate::listener::{Listeners, SessionRegistry};
+use crate::pipeline::{self, PipelineConfig};
 use crate::telemetry::{counters, Metrics, MetricsConfig};
 
-use super::events::{Event, EventBus};
+use super::events::{Bus, Event};
 use super::shutdown::Shutdown;
 use super::state::{GatewayState, SharedGatewayState};
 use super::worker::{WorkerConfig, Workers};
@@ -30,7 +30,7 @@ pub struct Server {
     config: Arc<Config>,
     config_path: PathBuf,
     shutdown: Arc<Shutdown>,
-    events: Arc<EventBus>,
+    bus: Arc<Bus>,
     state: SharedGatewayState,
     /// Workers wrapped in RwLock for hot-reload replacement
     workers: Arc<RwLock<Option<Workers>>>,
@@ -41,7 +41,7 @@ impl Server {
     pub async fn new(config: Config, config_path: PathBuf) -> Result<Self> {
         let config = Arc::new(config);
         let shutdown = Shutdown::new(config.settings.shutdown.drain_timeout);
-        let events = EventBus::new(config.telemetry.event_bus_capacity);
+        let bus = Bus::new(config.telemetry.bus_capacity);
 
         // Create gateway state with all shared components
         let state = Arc::new(GatewayState::new(config.clone(), shutdown.clone()).await?);
@@ -50,7 +50,7 @@ impl Server {
             config,
             config_path,
             shutdown,
-            events,
+            bus,
             state,
             workers: Arc::new(RwLock::new(None)),
         })
@@ -71,7 +71,7 @@ impl Server {
         let span = span!(Level::INFO, "smppd", version = env!("CARGO_PKG_VERSION"));
         let _enter = span.enter();
 
-        self.events.publish(Event::Starting);
+        self.bus.publish(Event::Starting);
 
         info!(
             listeners = self.config.listeners.len(),
@@ -122,17 +122,26 @@ impl Server {
             *self.workers.write().await = Some(workers);
         }
 
-        // Start the message forwarder
-        let forwarder_config = ForwarderConfig::default();
-        let forwarder_handle = forwarder::start(
-            forwarder_config,
+        // Create session registry for routing responses back to sessions
+        let session_registry = SessionRegistry::new();
+
+        // Start the event-driven pipeline
+        let pipeline_config = PipelineConfig::default();
+        let _pipeline_handles = pipeline::start_pipeline(
+            pipeline_config,
+            self.bus.clone(),
             self.state.clone(),
-            self.shutdown.clone(),
+            session_registry.clone(),
         );
-        info!("message forwarder started");
+        info!("event-driven pipeline started");
 
         // Start listeners for SMPP connections
-        let _listeners = match Listeners::new(&self.config.listeners, self.shutdown.clone(), forwarder_handle) {
+        let _listeners = match Listeners::new(
+            &self.config.listeners,
+            self.shutdown.clone(),
+            self.bus.clone(),
+            session_registry,
+        ) {
             Ok(listeners) => {
                 listeners.start();
                 info!(count = listeners.len(), "listeners started");
@@ -152,7 +161,7 @@ impl Server {
         // Log configuration
         self.log_config();
 
-        self.events.publish(Event::Ready);
+        self.bus.publish(Event::Ready);
 
         info!(
             admin = %self.config.admin.address,
@@ -191,7 +200,7 @@ impl Server {
         // 6. Terminate
         // ============================================================
 
-        self.events.publish(Event::ShutdownStarted);
+        self.bus.publish(Event::ShutdownStarted);
         info!("shutdown initiated");
 
         // Step 1: Stop maintenance task
@@ -204,7 +213,7 @@ impl Server {
         // Step 3: Start drain - listeners will stop accepting new connections
         // and begin draining existing connections
         self.shutdown.start_drain();
-        self.events.publish(Event::DrainStarted);
+        self.bus.publish(Event::DrainStarted);
 
         info!(
             active_connections = self.shutdown.active_connections(),
@@ -258,7 +267,7 @@ impl Server {
 
         crate::telemetry::shutdown_tracing();
 
-        self.events.publish(Event::ShutdownComplete);
+        self.bus.publish(Event::ShutdownComplete);
         info!("server stopped");
 
         Ok(())
@@ -435,12 +444,12 @@ impl Server {
         );
 
         counters::config_reloaded();
-        self.events.publish(Event::ConfigReloaded(new_config));
+        self.bus.publish(Event::ConfigReloaded(new_config));
     }
 
     /// Get event bus
-    pub fn events(&self) -> Arc<EventBus> {
-        self.events.clone()
+    pub fn bus(&self) -> Arc<Bus> {
+        self.bus.clone()
     }
 
     /// Get shutdown handle

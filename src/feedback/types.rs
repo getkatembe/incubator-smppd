@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DecisionId(u64);
 
-static DECISION_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Global decision ID counter (for recovery).
+pub static DECISION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl DecisionId {
     /// Create a new unique decision ID.

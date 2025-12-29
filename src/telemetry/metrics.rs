@@ -1871,6 +1871,13 @@ pub mod counters {
         }
     }
 
+    /// Record bind failure (simplified)
+    pub fn bind_failed(listener: &str, bind_type: &str) {
+        if let Some(c) = LISTENER_BINDS_TOTAL.get() {
+            c.add(1, &[kv("listener", listener), kv("bind_type", bind_type), kv("result", "failed")]);
+        }
+    }
+
     /// Record unbind (simplified)
     pub fn unbind(listener: &str) {
         listener_unbind(listener, "client");

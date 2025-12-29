@@ -490,12 +490,12 @@ mod tests {
     fn test_compound_matcher() {
         let matcher = Matcher::builder()
             .destination(MatcherKind::Prefix("+258".to_string())).unwrap()
-            .source(MatcherKind::Prefix("customer_".to_string())).unwrap()
+            .source(MatcherKind::Prefix("esme_".to_string())).unwrap()
             .build();
 
-        assert!(matcher.matches("+258841234567", Some("customer_123"), None));
+        assert!(matcher.matches("+258841234567", Some("esme_123"), None));
         assert!(!matcher.matches("+258841234567", Some("other_123"), None));
-        assert!(!matcher.matches("+27841234567", Some("customer_123"), None));
+        assert!(!matcher.matches("+27841234567", Some("esme_123"), None));
     }
 
     #[test]

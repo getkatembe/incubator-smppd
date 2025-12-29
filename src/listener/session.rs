@@ -1,6 +1,7 @@
 //! SMPP session state machine.
 //!
 //! Handles the SMPP protocol state transitions and PDU processing.
+//! Uses event-driven architecture for message processing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -9,20 +10,22 @@ use std::time::{Duration, Instant};
 use futures::{SinkExt, StreamExt};
 use smpp::codec::{PduFrame, SmppCodec};
 use smpp::pdu::{
-    BindTransceiver, BindTransceiverResp, BindTransmitter, BindTransmitterResp,
-    BindReceiver, BindReceiverResp, BindRespFields, Command, EnquireLink, EnquireLinkResp,
-    GenericNack, Header, Pdu, Status, SubmitSm, SubmitSmResp, UnbindResp,
+    BindReceiver, BindReceiverResp, BindRespFields, BindTransceiver, BindTransceiverResp,
+    BindTransmitter, BindTransmitterResp, Command, EnquireLink, EnquireLinkResp, GenericNack,
+    Header, Pdu, Status, SubmitSm, SubmitSmResp, UnbindResp,
 };
-use smpp::TlvMap;
 use smpp::Error as SmppError;
+use smpp::TlvMap;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::oneshot;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::forwarder::{ForwarderHandle, ForwardRequest};
+use crate::bootstrap::{Event, MessageEnvelope, ResponseEnvelope, SessionId, SharedBus};
+use crate::config::BindType;
+use crate::filter::{CredentialStore, OpenCredentialStore};
 use crate::telemetry::counters;
 
 use super::connection::{Connection, ConnectionState, Stream};
@@ -74,14 +77,28 @@ impl From<ConnectionState> for SessionState {
 }
 
 /// SMPP session handler.
+///
+/// Uses event-driven architecture:
+/// - Publishes MessageSubmitRequest events for submit_sm PDUs
+/// - Receives ResponseEnvelope via response_rx channel
+/// - Does NOT block waiting for upstream responses
 pub struct SmppSession {
+    /// Unique session identifier
+    session_id: SessionId,
+
     /// Underlying connection
     connection: Arc<Connection>,
 
-    /// Forwarder handle for sending messages to upstream
-    forwarder: ForwarderHandle,
+    /// Event bus for publishing events
+    bus: SharedBus,
 
-    /// Pending requests awaiting response
+    /// Response receiver for async responses
+    response_rx: mpsc::Receiver<ResponseEnvelope>,
+
+    /// Credential store for authentication
+    credentials: Arc<dyn CredentialStore>,
+
+    /// Pending requests awaiting response (for enquire_link etc)
     pending: HashMap<u32, PendingRequest>,
 
     /// EnquireLink interval (will be used for configurable keepalive)
@@ -95,19 +112,51 @@ pub struct SmppSession {
 struct PendingRequest {
     command: Command,
     sent_at: Instant,
-    response_tx: Option<oneshot::Sender<Result<PduFrame, SessionError>>>,
 }
 
 impl SmppSession {
     /// Create a new session for a connection.
-    pub fn new(connection: Arc<Connection>, forwarder: ForwarderHandle) -> Self {
+    pub fn new(
+        session_id: SessionId,
+        connection: Arc<Connection>,
+        bus: SharedBus,
+        response_rx: mpsc::Receiver<ResponseEnvelope>,
+    ) -> Self {
         Self {
+            session_id,
             connection,
-            forwarder,
+            bus,
+            response_rx,
+            credentials: Arc::new(OpenCredentialStore),
             pending: HashMap::new(),
             enquire_link_interval: Duration::from_secs(30),
             last_enquire_link: None,
         }
+    }
+
+    /// Create a new session with custom credential store.
+    pub fn with_credentials(
+        session_id: SessionId,
+        connection: Arc<Connection>,
+        bus: SharedBus,
+        response_rx: mpsc::Receiver<ResponseEnvelope>,
+        credentials: Arc<dyn CredentialStore>,
+    ) -> Self {
+        Self {
+            session_id,
+            connection,
+            bus,
+            response_rx,
+            credentials,
+            pending: HashMap::new(),
+            enquire_link_interval: Duration::from_secs(30),
+            last_enquire_link: None,
+        }
+    }
+
+    /// Get the session ID
+    pub fn session_id(&self) -> SessionId {
+        self.session_id
     }
 
     /// Run the session until completion.
@@ -133,6 +182,8 @@ impl SmppSession {
     }
 
     /// Main session loop.
+    ///
+    /// Event-driven: listens for both incoming PDUs and async responses
     async fn run_loop<T>(&mut self, framed: &mut Framed<T, SmppCodec>) -> Result<(), SessionError>
     where
         T: AsyncRead + AsyncWrite + Unpin,
@@ -148,7 +199,7 @@ impl SmppSession {
             }
 
             tokio::select! {
-                // Read incoming PDU
+                // Read incoming PDU from client
                 result = timeout(idle_timeout, framed.next()) => {
                     match result {
                         Ok(Some(Ok(frame))) => {
@@ -187,6 +238,13 @@ impl SmppSession {
                     }
                 }
 
+                // Receive async response from pipeline
+                Some(response) = self.response_rx.recv() => {
+                    if let Err(e) = self.handle_async_response(framed, response).await {
+                        error!(error = %e, "failed to send response to client");
+                    }
+                }
+
                 // Check for pending request timeouts
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {
                     self.check_pending_timeouts(request_timeout);
@@ -197,6 +255,33 @@ impl SmppSession {
         // Clean up
         self.connection.set_state(ConnectionState::Closed).await;
         Ok(())
+    }
+
+    /// Handle async response from the pipeline
+    async fn handle_async_response<T>(
+        &mut self,
+        framed: &mut Framed<T, SmppCodec>,
+        response: ResponseEnvelope,
+    ) -> Result<(), SessionError>
+    where
+        T: AsyncRead + AsyncWrite + Unpin,
+    {
+        debug!(
+            sequence = response.sequence_number,
+            message_id = %response.message_id,
+            status = response.command_status,
+            "sending async response to client"
+        );
+
+        let status = Status::from_u32(response.command_status);
+
+        let resp = SubmitSmResp {
+            message_id: response.message_id,
+            tlvs: TlvMap::default(),
+        };
+
+        let resp_header = Header::with_status(Command::SubmitSmResp, response.sequence_number, status);
+        self.send_pdu(framed, resp_header, Pdu::SubmitSmResp(resp)).await
     }
 
     /// Handle an incoming PDU.
@@ -298,10 +383,88 @@ impl SmppSession {
             "bind_transmitter request"
         );
 
-        // TODO: Authenticate against configured credentials
-        // For now, accept all binds
-
         counters::bind_received(self.connection.listener(), "transmitter");
+
+        // Authenticate against credential store
+        let creds = match self.credentials.validate(&bind.0.system_id, &bind.0.password) {
+            Some(creds) => creds,
+            None => {
+                warn!(
+                    system_id = %bind.0.system_id,
+                    "bind_transmitter authentication failed"
+                );
+                counters::bind_failed(self.connection.listener(), "transmitter");
+                let resp_header = Header::with_status(
+                    Command::BindTransmitterResp,
+                    header.sequence,
+                    Status::InvalidPassword,
+                );
+                let resp = BindTransmitterResp(BindRespFields {
+                    system_id: String::new(),
+                    tlvs: TlvMap::default(),
+                });
+                return self.send_pdu(framed, resp_header, Pdu::BindTransmitterResp(resp)).await;
+            }
+        };
+
+        // Check if client is enabled
+        if !creds.enabled {
+            warn!(
+                system_id = %bind.0.system_id,
+                "bind_transmitter rejected: client disabled"
+            );
+            counters::bind_failed(self.connection.listener(), "transmitter");
+            let resp_header = Header::with_status(
+                Command::BindTransmitterResp,
+                header.sequence,
+                Status::BindFailed,
+            );
+            let resp = BindTransmitterResp(BindRespFields {
+                system_id: String::new(),
+                tlvs: TlvMap::default(),
+            });
+            return self.send_pdu(framed, resp_header, Pdu::BindTransmitterResp(resp)).await;
+        }
+
+        // Check if bind type is allowed
+        if !creds.is_bind_allowed(BindType::Transmitter) {
+            warn!(
+                system_id = %bind.0.system_id,
+                "bind_transmitter rejected: bind type not allowed"
+            );
+            counters::bind_failed(self.connection.listener(), "transmitter");
+            let resp_header = Header::with_status(
+                Command::BindTransmitterResp,
+                header.sequence,
+                Status::BindFailed,
+            );
+            let resp = BindTransmitterResp(BindRespFields {
+                system_id: String::new(),
+                tlvs: TlvMap::default(),
+            });
+            return self.send_pdu(framed, resp_header, Pdu::BindTransmitterResp(resp)).await;
+        }
+
+        // Check IP address restriction
+        let peer_ip = self.connection.peer_addr().ip();
+        if !creds.is_ip_allowed(&peer_ip) {
+            warn!(
+                system_id = %bind.0.system_id,
+                peer_ip = %peer_ip,
+                "bind_transmitter rejected: IP not allowed"
+            );
+            counters::bind_failed(self.connection.listener(), "transmitter");
+            let resp_header = Header::with_status(
+                Command::BindTransmitterResp,
+                header.sequence,
+                Status::BindFailed,
+            );
+            let resp = BindTransmitterResp(BindRespFields {
+                system_id: String::new(),
+                tlvs: TlvMap::default(),
+            });
+            return self.send_pdu(framed, resp_header, Pdu::BindTransmitterResp(resp)).await;
+        }
 
         self.connection.set_system_id(bind.0.system_id.clone()).await;
         self.connection.set_state(ConnectionState::BoundTx).await;
@@ -337,6 +500,87 @@ impl SmppSession {
 
         counters::bind_received(self.connection.listener(), "receiver");
 
+        // Authenticate against credential store
+        let creds = match self.credentials.validate(&bind.0.system_id, &bind.0.password) {
+            Some(creds) => creds,
+            None => {
+                warn!(
+                    system_id = %bind.0.system_id,
+                    "bind_receiver authentication failed"
+                );
+                counters::bind_failed(self.connection.listener(), "receiver");
+                let resp_header = Header::with_status(
+                    Command::BindReceiverResp,
+                    header.sequence,
+                    Status::InvalidPassword,
+                );
+                let resp = BindReceiverResp(BindRespFields {
+                    system_id: String::new(),
+                    tlvs: TlvMap::default(),
+                });
+                return self.send_pdu(framed, resp_header, Pdu::BindReceiverResp(resp)).await;
+            }
+        };
+
+        // Check if client is enabled
+        if !creds.enabled {
+            warn!(
+                system_id = %bind.0.system_id,
+                "bind_receiver rejected: client disabled"
+            );
+            counters::bind_failed(self.connection.listener(), "receiver");
+            let resp_header = Header::with_status(
+                Command::BindReceiverResp,
+                header.sequence,
+                Status::BindFailed,
+            );
+            let resp = BindReceiverResp(BindRespFields {
+                system_id: String::new(),
+                tlvs: TlvMap::default(),
+            });
+            return self.send_pdu(framed, resp_header, Pdu::BindReceiverResp(resp)).await;
+        }
+
+        // Check if bind type is allowed
+        if !creds.is_bind_allowed(BindType::Receiver) {
+            warn!(
+                system_id = %bind.0.system_id,
+                "bind_receiver rejected: bind type not allowed"
+            );
+            counters::bind_failed(self.connection.listener(), "receiver");
+            let resp_header = Header::with_status(
+                Command::BindReceiverResp,
+                header.sequence,
+                Status::BindFailed,
+            );
+            let resp = BindReceiverResp(BindRespFields {
+                system_id: String::new(),
+                tlvs: TlvMap::default(),
+            });
+            return self.send_pdu(framed, resp_header, Pdu::BindReceiverResp(resp)).await;
+        }
+
+        // Check IP address restriction
+        let peer_ip = self.connection.peer_addr().ip();
+        if !creds.is_ip_allowed(&peer_ip) {
+            warn!(
+                system_id = %bind.0.system_id,
+                peer_ip = %peer_ip,
+                "bind_receiver rejected: IP not allowed"
+            );
+            counters::bind_failed(self.connection.listener(), "receiver");
+            let resp_header = Header::with_status(
+                Command::BindReceiverResp,
+                header.sequence,
+                Status::BindFailed,
+            );
+            let resp = BindReceiverResp(BindRespFields {
+                system_id: String::new(),
+                tlvs: TlvMap::default(),
+            });
+            return self.send_pdu(framed, resp_header, Pdu::BindReceiverResp(resp)).await;
+        }
+
         self.connection.set_system_id(bind.0.system_id.clone()).await;
         self.connection.set_state(ConnectionState::BoundRx).await;
 
@@ -370,6 +614,87 @@ impl SmppSession {
         );
 
         counters::bind_received(self.connection.listener(), "transceiver");
+
+        // Authenticate against credential store
+        let creds = match self.credentials.validate(&bind.0.system_id, &bind.0.password) {
+            Some(creds) => creds,
+            None => {
+                warn!(
+                    system_id = %bind.0.system_id,
+                    "bind_transceiver authentication failed"
+                );
+                counters::bind_failed(self.connection.listener(), "transceiver");
+                let resp_header = Header::with_status(
+                    Command::BindTransceiverResp,
+                    header.sequence,
+                    Status::InvalidPassword,
+                );
+                let resp = BindTransceiverResp(BindRespFields {
+                    system_id: String::new(),
+                    tlvs: TlvMap::default(),
+                });
+                return self.send_pdu(framed, resp_header, Pdu::BindTransceiverResp(resp)).await;
+            }
+        };
+
+        // Check if client is enabled
+        if !creds.enabled {
+            warn!(
+                system_id = %bind.0.system_id,
+                "bind_transceiver rejected: client disabled"
+            );
+            counters::bind_failed(self.connection.listener(), "transceiver");
+            let resp_header = Header::with_status(
+                Command::BindTransceiverResp,
+                header.sequence,
+                Status::BindFailed,
+            );
+            let resp = BindTransceiverResp(BindRespFields {
+                system_id: String::new(),
+                tlvs: TlvMap::default(),
+            });
+            return self.send_pdu(framed, resp_header, Pdu::BindTransceiverResp(resp)).await;
+        }
+
+        // Check if bind type is allowed
+        if !creds.is_bind_allowed(BindType::Transceiver) {
+            warn!(
+                system_id = %bind.0.system_id,
+                "bind_transceiver rejected: bind type not allowed"
+            );
+            counters::bind_failed(self.connection.listener(), "transceiver");
+            let resp_header = Header::with_status(
+                Command::BindTransceiverResp,
+                header.sequence,
+                Status::BindFailed,
+            );
+            let resp = BindTransceiverResp(BindRespFields {
+                system_id: String::new(),
+                tlvs: TlvMap::default(),
+            });
+            return self.send_pdu(framed, resp_header, Pdu::BindTransceiverResp(resp)).await;
+        }
+
+        // Check IP address restriction
+        let peer_ip = self.connection.peer_addr().ip();
+        if !creds.is_ip_allowed(&peer_ip) {
+            warn!(
+                system_id = %bind.0.system_id,
+                peer_ip = %peer_ip,
+                "bind_transceiver rejected: IP not allowed"
+            );
+            counters::bind_failed(self.connection.listener(), "transceiver");
+            let resp_header = Header::with_status(
+                Command::BindTransceiverResp,
+                header.sequence,
+                Status::BindFailed,
+            );
+            let resp = BindTransceiverResp(BindRespFields {
+                system_id: String::new(),
+                tlvs: TlvMap::default(),
+            });
+            return self.send_pdu(framed, resp_header, Pdu::BindTransceiverResp(resp)).await;
+        }
 
         self.connection.set_system_id(bind.0.system_id.clone()).await;
         self.connection.set_state(ConnectionState::BoundTrx).await;
@@ -431,9 +756,12 @@ impl SmppSession {
     }
 
     /// Handle submit_sm request.
+    ///
+    /// Event-driven: publishes MessageSubmitRequest and returns immediately.
+    /// Response will be sent asynchronously via handle_async_response.
     async fn handle_submit_sm<T>(
         &mut self,
-        framed: &mut Framed<T, SmppCodec>,
+        _framed: &mut Framed<T, SmppCodec>,
         header: Header,
         submit: SubmitSm,
     ) -> Result<(), SessionError>
@@ -448,58 +776,32 @@ impl SmppSession {
 
         counters::message_submitted(self.connection.listener());
 
-        // Create response channel for async forwarding result
-        let (response_tx, response_rx) = oneshot::channel();
-
         // Get client system_id
         let client_system_id = self.connection.system_id().await.unwrap_or_default();
 
-        // Create forward request
-        let forward_request = ForwardRequest {
-            submit_sm: submit.clone(),
+        // Create message envelope
+        let envelope = MessageEnvelope::new(
+            self.session_id,
+            header.sequence,
             client_system_id,
-            sequence_number: header.sequence,
-            response_tx,
-        };
+            submit,
+        );
 
-        // Send to forwarder
-        if let Err(e) = self.forwarder.forward(forward_request).await {
-            warn!(error = %e, "failed to send to forwarder");
-            return self.send_error(framed, header.sequence, Status::SystemError).await;
-        }
+        debug!(
+            message_id = %envelope.message_id,
+            session_id = %self.session_id,
+            "publishing MessageSubmitRequest event"
+        );
 
-        // Wait for forwarding result (with timeout)
-        let result = match timeout(Duration::from_secs(30), response_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                // Channel closed - forwarder was dropped
-                warn!("forwarder channel closed");
-                return self.send_error(framed, header.sequence, Status::SystemError).await;
-            }
-            Err(_) => {
-                // Timeout waiting for forward result
-                warn!("timeout waiting for forward result");
-                return self.send_error(framed, header.sequence, Status::SystemError).await;
-            }
-        };
+        // Publish event - response will come back asynchronously
+        self.bus.publish(Event::MessageSubmitRequest(envelope));
 
-        // Send response to client - use proper status code mapping
-        let status = Status::from_u32(result.command_status);
-
-        let resp = SubmitSmResp {
-            message_id: result.message_id.clone(),
-            tlvs: TlvMap::default(),
-        };
-
-        let resp_header = Header::with_status(Command::SubmitSmResp, header.sequence, status);
-        self.send_pdu(framed, resp_header, Pdu::SubmitSmResp(resp)).await?;
-
-        debug!(message_id = %result.message_id, "submit_sm accepted");
-
+        // Return immediately - no blocking!
+        // Response will be sent via handle_async_response when the pipeline completes
         Ok(())
     }
 
-    /// Handle a response PDU.
+    /// Handle a response PDU (for enquire_link responses, etc).
     async fn handle_response(&mut self, frame: PduFrame) -> Result<(), SessionError> {
         let seq = frame.sequence();
 
@@ -510,10 +812,6 @@ impl SmppSession {
                 latency_ms = pending.sent_at.elapsed().as_millis(),
                 "response received"
             );
-
-            if let Some(tx) = pending.response_tx {
-                let _ = tx.send(Ok(frame));
-            }
         } else {
             warn!(sequence = seq, "unexpected response");
         }
@@ -535,7 +833,6 @@ impl SmppSession {
         self.pending.insert(seq, PendingRequest {
             command: Command::EnquireLink,
             sent_at: Instant::now(),
-            response_tx: None,
         });
 
         self.send_pdu(framed, header, Pdu::EnquireLink(EnquireLink)).await?;
@@ -576,7 +873,7 @@ impl SmppSession {
         Ok(())
     }
 
-    /// Check for timed out pending requests.
+    /// Check for timed out pending requests (enquire_link, etc).
     fn check_pending_timeouts(&mut self, timeout: Duration) {
         let now = Instant::now();
         let timed_out: Vec<u32> = self
@@ -593,10 +890,6 @@ impl SmppSession {
                     command = ?pending.command,
                     "request timed out"
                 );
-
-                if let Some(tx) = pending.response_tx {
-                    let _ = tx.send(Err(SessionError::Timeout));
-                }
 
                 counters::request_timeout(self.connection.listener());
             }

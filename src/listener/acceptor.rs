@@ -1,4 +1,6 @@
 //! TCP/TLS acceptor for incoming connections.
+//!
+//! Event-driven: sessions register with SessionRegistry and use EventBus.
 
 use std::collections::HashMap;
 use std::io;
@@ -12,12 +14,12 @@ use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn, span, Level, Instrument};
 
-use crate::bootstrap::Shutdown;
+use crate::bootstrap::{Event, SessionId, SharedBus, Shutdown};
 use crate::config::{ListenerConfig, TlsConfig};
-use crate::forwarder::ForwarderHandle;
 use crate::telemetry::counters;
 
 use super::connection::{Connection, ConnectionId, Stream};
+use super::registry::SharedSessionRegistry;
 use super::session::SmppSession;
 
 /// Listener for accepting incoming SMPP connections.
@@ -55,8 +57,11 @@ pub struct Listener {
     /// New connection sender
     connection_tx: mpsc::Sender<Arc<Connection>>,
 
-    /// Forwarder handle for message forwarding
-    forwarder: ForwarderHandle,
+    /// Event bus for event-driven processing
+    bus: SharedBus,
+
+    /// Session registry for response routing
+    session_registry: SharedSessionRegistry,
 }
 
 impl Listener {
@@ -65,7 +70,8 @@ impl Listener {
         config: &ListenerConfig,
         shutdown: Arc<Shutdown>,
         connection_tx: mpsc::Sender<Arc<Connection>>,
-        forwarder: ForwarderHandle,
+        bus: SharedBus,
+        session_registry: SharedSessionRegistry,
     ) -> io::Result<Self> {
         let tls_acceptor = if let Some(tls_config) = &config.tls {
             Some(build_tls_acceptor(tls_config)?)
@@ -85,7 +91,8 @@ impl Listener {
             request_timeout: config.limits.request_timeout,
             shutdown,
             connection_tx,
-            forwarder,
+            bus,
+            session_registry,
         })
     }
 
@@ -245,16 +252,41 @@ impl Listener {
 
         // Spawn connection handler
         let listener = self.clone();
-        let forwarder = self.forwarder.clone();
+        let bus = self.bus.clone();
+        let session_registry = self.session_registry.clone();
+        let listener_name = self.name.clone();
+
         tokio::spawn(
             async move {
+                // Generate session ID and register with session registry
+                let session_id = SessionId::new();
+                let response_rx = session_registry
+                    .register(session_id, listener_name.clone())
+                    .await;
+
+                // Publish session registered event
+                bus.publish(Event::SessionRegistered {
+                    session_id,
+                    listener: listener_name.clone(),
+                    peer: peer_addr,
+                });
+
                 // Create SMPP session for this connection
-                let mut session = SmppSession::new(connection.clone(), forwarder);
+                let mut session = SmppSession::new(
+                    session_id,
+                    connection.clone(),
+                    bus.clone(),
+                    response_rx,
+                );
 
                 // Run session until completion
                 if let Err(e) = session.run().await {
                     debug!(error = %e, "session ended with error");
                 }
+
+                // Unregister session
+                session_registry.unregister(session_id).await;
+                bus.publish(Event::SessionUnregistered { session_id });
 
                 // Remove from active connections
                 {
@@ -337,13 +369,20 @@ impl Listeners {
     pub fn new(
         configs: &[ListenerConfig],
         shutdown: Arc<Shutdown>,
-        forwarder: ForwarderHandle,
+        bus: SharedBus,
+        session_registry: SharedSessionRegistry,
     ) -> io::Result<Self> {
         let (tx, rx) = mpsc::channel(1024);
         let mut listeners = Vec::with_capacity(configs.len());
 
         for config in configs {
-            let listener = Listener::new(config, shutdown.clone(), tx.clone(), forwarder.clone())?;
+            let listener = Listener::new(
+                config,
+                shutdown.clone(),
+                tx.clone(),
+                bus.clone(),
+                session_registry.clone(),
+            )?;
             listeners.push(Arc::new(listener));
         }
 

@@ -1,11 +1,15 @@
 pub mod admin;
 pub mod bootstrap;
+pub mod cdr;
 pub mod cluster;
 pub mod config;
 pub mod feedback;
 pub mod filter;
+pub mod firewall;
 pub mod forwarder;
 pub mod listener;
+pub mod pipeline;
+pub mod plugins;
 pub mod router;
 pub mod store;
 pub mod telemetry;

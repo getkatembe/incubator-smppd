@@ -196,7 +196,7 @@ impl AdminState {
                     name: name.to_string(),
                     endpoints: cluster.endpoint_count(),
                     healthy_endpoints: cluster.healthy_count(),
-                    active_connections: 0, // TODO: track per-cluster connections
+                    active_connections: cluster.active_connections() as u64,
                 })
             })
             .collect()
@@ -260,7 +260,7 @@ impl AdminState {
 
     /// Get feedback statistics for all targets.
     pub fn all_feedback_stats(&self) -> Vec<(String, TargetStats)> {
-        self.gateway_state.feedback.all_target_stats()
+        self.gateway_state.storage.all_target_stats()
     }
 
     /// Get current config.

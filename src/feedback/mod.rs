@@ -8,45 +8,16 @@
 //! ```text
 //! Request → Decision → Execution → Outcome
 //!              ↓                      ↓
-//!         DecisionStore ←────────────┘
+//!          Storage ←─────────────────┘
 //!              ↓
 //!         Statistics → Adaptive Algorithms
 //! ```
+//!
+//! Feedback operations are part of the unified [`Storage`](crate::store::Storage) trait.
 
-mod memory;
-mod types;
+pub mod types;
 
-pub use memory::InMemoryFeedback;
 pub use types::*;
-
-use std::sync::Arc;
-use std::time::Duration;
-
-/// Feedback store for recording decisions and outcomes.
-///
-/// Implementations should be thread-safe and lock-free where possible.
-pub trait FeedbackStore: Send + Sync {
-    /// Record a decision being made. Returns a decision ID for correlation.
-    fn record_decision(&self, decision: Decision) -> DecisionId;
-
-    /// Record the outcome of a decision.
-    fn record_outcome(&self, outcome: Outcome);
-
-    /// Get statistics for a specific decision type.
-    fn stats(&self, decision_type: DecisionType) -> DecisionStats;
-
-    /// Get statistics for a specific target (endpoint, cluster, route).
-    fn target_stats(&self, target: &str) -> TargetStats;
-
-    /// Get all targets with their stats, sorted by success rate.
-    fn all_target_stats(&self) -> Vec<(String, TargetStats)>;
-
-    /// Prune old data (called periodically).
-    fn prune(&self, max_age: Duration);
-}
-
-/// Shared feedback store.
-pub type SharedFeedback = Arc<dyn FeedbackStore>;
 
 #[cfg(test)]
 mod tests {

@@ -281,7 +281,7 @@ impl DlrProcessor {
             let status_str = dlr.status.as_str().to_string();
             let error_code = dlr.error_code;
 
-            self.state.store.update(message_id, Box::new(move |m| {
+            self.state.storage.update(message_id, Box::new(move |m| {
                 // Record the DLR event
                 m.record_delivery_receipt(&status_str, error_code);
 
@@ -374,7 +374,7 @@ impl DlrProcessor {
             .with_state(MessageState::InFlight)
             .with_limit(1000);
 
-        let messages = self.state.store.query(&query);
+        let messages = self.state.storage.query(&query);
 
         for msg in messages {
             if msg.smsc_message_id.as_deref() == Some(smsc_id) {
@@ -387,7 +387,7 @@ impl DlrProcessor {
             .with_state(MessageState::Retrying)
             .with_limit(1000);
 
-        let messages = self.state.store.query(&query);
+        let messages = self.state.storage.query(&query);
 
         for msg in messages {
             if msg.smsc_message_id.as_deref() == Some(smsc_id) {

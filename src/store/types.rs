@@ -11,12 +11,18 @@ pub use crate::feedback::{DecisionContext, DecisionId, DecisionType};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MessageId(u64);
 
-static MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Global message ID counter (for recovery).
+pub static MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl MessageId {
     /// Create a new unique message ID.
     pub fn new() -> Self {
         Self(MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Create a message ID from a raw value (for recovery).
+    pub fn from_u64(id: u64) -> Self {
+        Self(id)
     }
 
     /// Get the raw ID value.
@@ -676,4 +682,298 @@ pub struct StoreStats {
     pub expired: u64,
     /// Retrying messages
     pub retrying: u64,
+    /// Estimated memory usage in bytes
+    pub memory_bytes: u64,
+    /// Configured maximum messages
+    pub max_messages: u64,
+    /// Configured maximum memory in bytes
+    pub max_memory_bytes: u64,
+}
+
+// =============================================================================
+// CDR Types
+// =============================================================================
+
+/// Query filter for CDRs.
+#[derive(Debug, Clone, Default)]
+pub struct CdrQuery {
+    /// Filter by ESME system_id
+    pub esme_id: Option<String>,
+    /// Filter by message ID
+    pub message_id: Option<String>,
+    /// Filter by destination prefix
+    pub destination_prefix: Option<String>,
+    /// Filter by route
+    pub route: Option<String>,
+    /// Filter by status code
+    pub status_code: Option<u32>,
+    /// Filter CDRs created after this time
+    pub after: Option<SystemTime>,
+    /// Filter CDRs created before this time
+    pub before: Option<SystemTime>,
+    /// Maximum number of results
+    pub limit: Option<usize>,
+}
+
+impl CdrQuery {
+    /// Create a new query.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Filter by ESME.
+    pub fn with_esme(mut self, esme_id: impl Into<String>) -> Self {
+        self.esme_id = Some(esme_id.into());
+        self
+    }
+
+    /// Filter by message ID.
+    pub fn with_message_id(mut self, id: impl Into<String>) -> Self {
+        self.message_id = Some(id.into());
+        self
+    }
+
+    /// Set limit.
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+}
+
+/// CDR statistics.
+#[derive(Debug, Clone, Default)]
+pub struct CdrStats {
+    /// Total CDRs stored
+    pub total: u64,
+    /// CDRs by type
+    pub by_type: std::collections::HashMap<String, u64>,
+    /// Total revenue
+    pub total_revenue: i64,
+    /// Total cost
+    pub total_cost: i64,
+    /// Currency (if consistent)
+    pub currency: Option<String>,
+}
+
+// =============================================================================
+// Rate Limit Types
+// =============================================================================
+
+/// Rate limit state for persistence.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RateLimitState {
+    /// Current token count
+    pub tokens: u64,
+    /// Last refill timestamp (Unix millis)
+    pub last_refill_ms: u64,
+    /// Token rate (per second)
+    pub rate: u32,
+    /// Maximum capacity
+    pub capacity: u32,
+}
+
+impl RateLimitState {
+    /// Create a new rate limit state.
+    pub fn new(rate: u32, capacity: u32) -> Self {
+        Self {
+            tokens: capacity as u64,
+            last_refill_ms: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+            rate,
+            capacity,
+        }
+    }
+
+    /// Create from existing state.
+    pub fn with_tokens(mut self, tokens: u64, last_refill_ms: u64) -> Self {
+        self.tokens = tokens;
+        self.last_refill_ms = last_refill_ms;
+        self
+    }
+}
+
+// =============================================================================
+// Firewall Types
+// =============================================================================
+
+/// ESME firewall settings for persistence.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct FirewallSettings {
+    /// Allowed destination patterns
+    pub destination_allow: Vec<String>,
+    /// Denied destination patterns
+    pub destination_deny: Vec<String>,
+    /// Allowed source patterns
+    pub source_allow: Vec<String>,
+    /// Denied source patterns
+    pub source_deny: Vec<String>,
+    /// Allowed sender IDs
+    pub sender_allow: Vec<String>,
+    /// Denied sender IDs
+    pub sender_deny: Vec<String>,
+    /// Blocked keywords
+    pub blocked_keywords: Vec<String>,
+    /// Blocked patterns (regex)
+    pub blocked_patterns: Vec<String>,
+    /// Time window restrictions (JSON for flexibility)
+    pub time_restrictions: Option<String>,
+    /// Last updated timestamp
+    pub updated_at: Option<SystemTime>,
+}
+
+impl FirewallSettings {
+    /// Create new empty settings.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a destination allow pattern.
+    pub fn allow_destination(mut self, pattern: impl Into<String>) -> Self {
+        self.destination_allow.push(pattern.into());
+        self
+    }
+
+    /// Add a destination deny pattern.
+    pub fn deny_destination(mut self, pattern: impl Into<String>) -> Self {
+        self.destination_deny.push(pattern.into());
+        self
+    }
+
+    /// Add a blocked keyword.
+    pub fn block_keyword(mut self, keyword: impl Into<String>) -> Self {
+        self.blocked_keywords.push(keyword.into());
+        self
+    }
+}
+
+/// Firewall event for audit logging.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FirewallEvent {
+    /// Event ID
+    pub id: u64,
+    /// Timestamp
+    pub timestamp: SystemTime,
+    /// ESME system_id
+    pub esme_id: String,
+    /// Source address
+    pub source: String,
+    /// Destination address
+    pub destination: String,
+    /// Action taken
+    pub action: FirewallAction,
+    /// Rule that matched
+    pub rule: Option<String>,
+    /// Reason for action
+    pub reason: Option<String>,
+    /// Message content preview (truncated)
+    pub content_preview: Option<String>,
+}
+
+/// Global firewall event counter.
+pub static FIREWALL_EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+impl FirewallEvent {
+    /// Create a new firewall event.
+    pub fn new(
+        esme_id: impl Into<String>,
+        source: impl Into<String>,
+        destination: impl Into<String>,
+        action: FirewallAction,
+    ) -> Self {
+        Self {
+            id: FIREWALL_EVENT_COUNTER.fetch_add(1, Ordering::Relaxed),
+            timestamp: SystemTime::now(),
+            esme_id: esme_id.into(),
+            source: source.into(),
+            destination: destination.into(),
+            action,
+            rule: None,
+            reason: None,
+            content_preview: None,
+        }
+    }
+
+    /// Set the matching rule.
+    pub fn with_rule(mut self, rule: impl Into<String>) -> Self {
+        self.rule = Some(rule.into());
+        self
+    }
+
+    /// Set the reason.
+    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
+    }
+}
+
+/// Firewall action taken.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FirewallAction {
+    /// Message was allowed
+    Allow,
+    /// Message was blocked
+    Block,
+    /// Message was logged only
+    Log,
+    /// Message was quarantined
+    Quarantine,
+    /// Alert was raised
+    Alert,
+}
+
+impl FirewallAction {
+    /// Get action name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Block => "block",
+            Self::Log => "log",
+            Self::Quarantine => "quarantine",
+            Self::Alert => "alert",
+        }
+    }
+}
+
+/// Query filter for firewall events.
+#[derive(Debug, Clone, Default)]
+pub struct FirewallEventQuery {
+    /// Filter by ESME system_id
+    pub esme_id: Option<String>,
+    /// Filter by action
+    pub action: Option<FirewallAction>,
+    /// Filter by destination prefix
+    pub destination_prefix: Option<String>,
+    /// Filter events after this time
+    pub after: Option<SystemTime>,
+    /// Filter events before this time
+    pub before: Option<SystemTime>,
+    /// Maximum number of results
+    pub limit: Option<usize>,
+}
+
+impl FirewallEventQuery {
+    /// Create a new query.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Filter by ESME.
+    pub fn with_esme(mut self, esme_id: impl Into<String>) -> Self {
+        self.esme_id = Some(esme_id.into());
+        self
+    }
+
+    /// Filter by action.
+    pub fn with_action(mut self, action: FirewallAction) -> Self {
+        self.action = Some(action);
+        self
+    }
+
+    /// Set limit.
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
 }

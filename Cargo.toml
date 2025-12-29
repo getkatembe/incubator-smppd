@@ -51,6 +51,15 @@ tokio-rustls = "0.26"
 rustls = "0.23"
 rustls-pemfile = "2"
 
+# Pure Rust persistent storage (LSM-tree like RocksDB)
+fjall = "2"
+
+# XDG directory paths
+dirs = "5"
+
+# Unix system calls (for getuid)
+libc = "0.2"
+
 # Utils
 bytes = "1"
 thiserror = "2"
@@ -64,26 +73,66 @@ tokio-util = { version = "0.7", features = ["codec"] }
 regex = "1"
 chrono = "0.4"
 chrono-tz = "0.10"
+reqwest = { version = "0.12", features = ["json"] }
+ipnet = "2"
+
+# Async channel for bus
+flume = "0.11"
 
 [build-dependencies]
 tonic-build = "0.12"
 
 [features]
 default = ["full"]
-full = ["lua", "hlr", "campaign", "queue"]
+full = ["lua", "wasm", "native", "hlr", "campaign", "queue"]
 lua = ["dep:mlua"]
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+native = ["dep:libloading"]
 hlr = []
 campaign = []
 queue = []
 
 [dependencies.mlua]
 version = "0.10"
-features = ["lua54", "async"]
+features = ["lua54", "async", "send", "serialize"]
+optional = true
+
+[dependencies.wasmtime]
+version = "28"
+optional = true
+
+[dependencies.wasmtime-wasi]
+version = "28"
+optional = true
+
+[dependencies.libloading]
+version = "0.8"
 optional = true
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
 tokio-test = "0.4"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "store"
+harness = false
+
+[[bench]]
+name = "wal"
+harness = false
+
+[[bench]]
+name = "events"
+harness = false
+
+[[bench]]
+name = "router"
+harness = false
+
+[[bench]]
+name = "loadbalancer"
+harness = false
 
 [[bin]]
 name = "smppd"
